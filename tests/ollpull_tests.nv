@@ -1,0 +1,202 @@
+// ollpull_tests.nv — the two failures a simpler pull API produces and
+// nobody notices.
+//
+// RED ON PURPOSE: every body under `src/` is a `todo()`, so every
+// assertion here reaches `not implemented: ollama-nv.<module>.<fn>`.
+// That is the expected result until the bodies land.
+//
+// NO SOCKET IN THIS FILE.  `ollpull` and `ollnd` are `core`-shaped
+// inside a `host` package: every row is `[]`, so a twenty-minute
+// download is four lines of a string here.
+//
+// The objects below are the ones this server writes, trimmed to the
+// fields this package reads.
+
+use std.test
+use std.bytes
+use std.list
+use ollnd
+use ollpull
+
+fn chunk(text: Str) -> [u8]
+    bytes.to_byte_list(bytes.from_str(text))
+
+@test
+fn test_a_failed_pull_answers_200_and_says_so_inside_the_stream() [io]
+    // THE FAILURE A STATUS CHECK DOES NOT SEE.  The server answers 200
+    // and then writes an error object; a client that checked the code
+    // reports a completed download of a model that was never fetched,
+    // and the next call fails with a 404 that looks like a different
+    // bug.
+    let line = "{\"error\":\"pull model manifest: file does not exist\"}"
+
+    test.case("the reader recognises the shape")
+    test.assert(ollnd.is_error(line))
+
+    match ollpull.event_of(line)
+        Err(_) => test.assert(false)
+        Ok(e)  =>
+            test.case("and it arrives as an EVENT, so a drain loop cannot walk past it")
+            test.assert(ollpull.is_failure(e))
+
+            test.case("carrying a fault the caller can report")
+            match ollpull.fault_of(e)
+                Some(_) => test.assert(true)
+                None    => test.assert(false)
+
+@test
+fn test_the_progress_numbers_are_per_layer_and_reset() [io]
+    // A client that drew one bar from `completed` and `total` draws a
+    // bar that reaches 100% and jumps back to zero once per layer.
+    var s = ollpull.state()
+
+    s = ollpull.advance(s, OllPullStatus("pulling manifest"))
+    s = ollpull.advance(s, OllPullProgress("sha256:aaa", 1000, 1000))
+    s = ollpull.advance(s, OllPullProgress("sha256:bbb", 0, 4000))
+
+    test.case("the second layer starts at zero, which is the trap")
+    test.assert(s.current_completed == 0)
+
+    test.case("but the whole download is not back at zero")
+    let total = ollpull.overall(s)
+    test.assert(total.completed == 1000)
+
+    test.case("and one layer is finished")
+    test.assert(total.layers_done == 1)
+
+@test
+fn test_the_expected_total_grows_as_layers_are_discovered() [io]
+    // Which is why `overall` answers bytes and a percentage is
+    // qualified: the stream never says how many blobs there are.
+    var s = ollpull.state()
+    s = ollpull.advance(s, OllPullProgress("sha256:aaa", 500, 1000))
+
+    test.case("one layer known")
+    test.assert(ollpull.overall(s).total == 1000)
+
+    s = ollpull.advance(s, OllPullProgress("sha256:aaa", 1000, 1000))
+    s = ollpull.advance(s, OllPullProgress("sha256:bbb", 0, 4000))
+
+    test.case("two layers known, and the total went UP")
+    test.assert(ollpull.overall(s).total == 5000)
+
+@test
+fn test_a_verifying_step_carries_no_bytes_and_takes_real_time() [io]
+    // A bar alone looks stuck here.  The status line is what a caller
+    // shows, which is why it is a field.
+    var s = ollpull.state()
+    s = ollpull.advance(s, OllPullProgress("sha256:aaa", 4000, 4000))
+    s = ollpull.advance(s, OllPullStatus("verifying sha256 digest"))
+
+    test.assert(s.status == "verifying sha256 digest")
+    test.assert(ollpull.describe(s) != "")
+
+@test
+fn test_a_pull_is_over_only_when_it_said_success() [io]
+    var s = ollpull.state()
+    s = ollpull.advance(s, OllPullProgress("sha256:aaa", 4000, 4000))
+
+    test.case("bytes alone are not the end")
+    test.assert(ollpull.succeeded(s) == false)
+
+    s = ollpull.advance(s, OllPullDone)
+
+    test.case("the success object is")
+    test.assert(ollpull.succeeded(s))
+
+@test
+fn test_an_interrupted_pull_is_not_a_failed_one() [io]
+    // Partial blobs stay on disk and the next pull resumes them, so
+    // the two states have different next steps.
+    var s = ollpull.state()
+    s = ollpull.advance(s, OllPullProgress("sha256:aaa", 2000, 4000))
+
+    test.assert(ollpull.succeeded(s) == false)
+    test.assert(ollpull.fraction(s) > 0.0)
+
+@test
+fn test_a_whole_stream_is_read_from_a_body_a_caller_already_has() [io]
+    let body = "{\"status\":\"pulling manifest\"}\n{\"status\":\"pulling sha256:aaa\",\"digest\":\"sha256:aaa\",\"total\":4000,\"completed\":4000}\n{\"status\":\"success\"}\n"
+
+    match ollpull.events_of(body)
+        Err(_) => test.assert(false)
+        Ok(es) =>
+            test.case("three objects, three events")
+            test.assert(list.len(es) == 3)
+
+@test
+fn test_a_line_arrives_split_and_is_still_one_object() [io]
+    // A read off a socket ends where the network chose.
+    var r = ollnd.reader()
+
+    match ollnd.feed(r, chunk("{\"status\":\"pull"))
+        Err(_) => test.assert(false)
+        Ok(s)  =>
+            r = s.reader
+            test.case("half an object completes nothing")
+            match s.line
+                Some(_) => test.assert(false)
+                None    => test.assert(true)
+
+    match ollnd.feed(r, chunk("ing manifest\"}\n"))
+        Err(_) => test.assert(false)
+        Ok(s)  =>
+            match s.line
+                None    => test.assert(false)
+                Some(l) =>
+                    test.case("and the rest completes one")
+                    test.assert(l == "{\"status\":\"pulling manifest\"}")
+
+@test
+fn test_several_objects_arrive_in_one_read() [io]
+    var r = ollnd.reader()
+    var seen = 0
+
+    match ollnd.feed(r, chunk("{\"a\":1}\n{\"b\":2}\n"))
+        Err(_) => test.assert(false)
+        Ok(s)  =>
+            r = s.reader
+            match s.line
+                Some(_) =>
+                    seen = seen + 1
+                None    => test.assert(false)
+
+    match ollnd.take(r)
+        Err(_) => test.assert(false)
+        Ok(s)  =>
+            match s.line
+                Some(_) =>
+                    seen = seen + 1
+                None    => test.assert(false)
+
+    test.case("two objects out of one read")
+    test.assert(seen == 2)
+
+@test
+fn test_an_escaped_newline_inside_a_string_is_not_a_boundary() [io]
+    // A generated token is often a newline.  A reader that split on
+    // the DECODED text would cut this object in half.
+    match ollnd.feed(ollnd.reader(), chunk("{\"response\":\"\\n\"}\n"))
+        Err(_) => test.assert(false)
+        Ok(s)  =>
+            match s.line
+                None    => test.assert(false)
+                Some(l) => test.assert(l == "{\"response\":\"\\n\"}")
+
+@test
+fn test_the_terminator_is_a_field_and_not_a_sentinel() [io]
+    // There is no `[DONE]` here and no blank line: the end of the
+    // stream is `"done": true` on the last object, which is what makes
+    // a truncated stream distinguishable at all.
+    test.assert(ollnd.is_done("{\"done\":true}"))
+    test.assert(ollnd.is_done("{\"done\":false}") == false)
+
+@test
+fn test_a_pull_request_names_the_model_and_its_insecure_flag() [io]
+    match ollpull.encode_pull("llama3", false)
+        Ok(_)  => test.assert(true)
+        Err(_) => test.assert(false)
+
+    match ollpull.encode_pull("", false)
+        Ok(_)  => test.assert(false)
+        Err(_) => test.assert(true)

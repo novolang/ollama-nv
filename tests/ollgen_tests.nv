@@ -1,0 +1,264 @@
+// ollgen_tests.nv — what this API carries that its own
+// OpenAI-compatible endpoint drops, and the model reference that is
+// not a string.
+//
+// RED ON PURPOSE: every body under `src/` is a `todo()`, so every
+// assertion here reaches `not implemented: ollama-nv.<module>.<fn>`.
+
+use std.test
+use std.json
+use std.list
+use ollfault
+use ollgen
+use ollmodel
+use ollembed
+
+@test
+fn test_a_residency_is_a_value_with_a_named_forever() [io]
+    // `-1` and `0` are the two settings a caller most wants and the
+    // two a duration string spells least clearly.
+    test.assert(ollgen.keep_alive_value(OllKeepForever) == "-1")
+    test.assert(ollgen.keep_alive_value(OllKeepNone) == "0")
+    test.assert(ollgen.keep_alive_value(OllKeepSeconds(300)) == "300")
+
+@test
+fn test_an_unset_option_is_absent_and_not_a_zero() [io]
+    // This server treats a supplied zero as a setting, so sending one
+    // for a field the caller never set changes the generation.
+    let o = ollgen.options()
+
+    test.assert(o.num_ctx == -1)
+    test.assert(json.len(ollgen.encode_options(o)) == Some(0))
+
+@test
+fn test_a_context_window_above_the_model_s_own_is_refused() [io]
+    // The server accepts it and does not honour it, and a prompt
+    // longer than the real window is truncated FROM THE FRONT with no
+    // field in the reply saying so.
+    let g = ollgen.with_options(ollgen.generate("llama3", "hello"),
+                                ollgen.with_num_ctx(ollgen.options(), 1000000))
+
+    match ollgen.check(g, 8192)
+        Ok(_)  => test.assert(false)
+        Err(_) => test.assert(true)
+
+@test
+fn test_a_raw_request_with_a_system_prompt_is_a_contradiction() [io]
+    // `raw` says "do not template this"; a system prompt is a
+    // templating instruction.
+    var g = ollgen.raw(ollgen.generate("llama3", "<s>hi"))
+    g = OllGenerate { model: g.model, prompt_text: g.prompt_text, suffix: g.suffix,
+                      sys_prompt: "be brief", images: g.images, raw: g.raw,
+                      format: g.format, options: g.options,
+                      keep_alive: g.keep_alive, context: g.context }
+
+    match ollgen.check(g, -1)
+        Ok(_)  => test.assert(false)
+        Err(_) => test.assert(true)
+
+@test
+fn test_the_context_array_is_the_conversation_travelling_in_the_caller_s_hands() [io]
+    // The server keeps nothing between calls.  This array is what one
+    // reply hands the next request instead of resending the text.
+    let g = ollgen.with_context(ollgen.generate("llama3", "and then"), [1, 2, 3])
+
+    test.assert(list.len(g.context) == 3)
+
+@test
+fn test_a_truncated_reply_is_not_a_complete_one() [io]
+    // The same invisible state the hosted APIs have, under a third
+    // name.
+    test.assert(ollgen.is_complete(OllDoneStop))
+    test.assert(ollgen.is_complete(OllDoneLength) == false)
+
+@test
+fn test_prefill_and_decode_are_measured_separately() [io]
+    // One is compute-bound and the other memory-bandwidth-bound, and a
+    // single tokens-per-second figure over both hides which of them a
+    // change helped.
+    let body = "{\"model\":\"llama3\",\"done\":true,\"done_reason\":\"stop\",\"response\":\"blue\",\"total_duration\":5000000000,\"load_duration\":1000000000,\"prompt_eval_count\":26,\"prompt_eval_duration\":300000000,\"eval_count\":290,\"eval_duration\":3600000000}"
+
+    match ollgen.decode_reply(body)
+        Err(_) => test.assert(false)
+        Ok(r)  =>
+            test.case("both counts arrived")
+            test.assert(r.timings.prompt_eval_count == 26)
+            test.assert(r.timings.eval_count == 290)
+
+            test.case("and they give two different rates")
+            test.assert(ollgen.eval_rate(r.timings) > 0.0)
+            test.assert(ollgen.prompt_rate(r.timings) > ollgen.eval_rate(r.timings))
+
+@test
+fn test_a_load_costs_nothing_when_the_model_was_already_resident() [io]
+    // Which is what `keep_alive` is for, and what makes it visible.
+    let body = "{\"model\":\"llama3\",\"done\":true,\"done_reason\":\"stop\",\"response\":\"hi\",\"load_duration\":0,\"eval_count\":2,\"eval_duration\":100000000}"
+
+    match ollgen.decode_reply(body)
+        Err(_) => test.assert(false)
+        Ok(r)  => test.assert(r.timings.load_duration_ns == 0)
+
+@test
+fn test_a_streamed_reply_folds_deltas_and_ends_on_a_field() [io]
+    var s = ollgen.stream()
+
+    match ollgen.chunk_of("{\"model\":\"llama3\",\"response\":\"The \",\"done\":false}")
+        Err(_) => test.assert(false)
+        Ok(c)  =>
+            s = ollgen.apply(s, c)
+
+    match ollgen.chunk_of("{\"model\":\"llama3\",\"response\":\"sky\",\"done\":false}")
+        Err(_) => test.assert(false)
+        Ok(c)  =>
+            s = ollgen.apply(s, c)
+
+    test.case("the deltas accumulate")
+    test.assert(ollgen.partial(s).text == "The sky")
+
+    test.case("and the stream has not finished")
+    match ollgen.finish(s)
+        Ok(_)  => test.assert(false)
+        Err(_) => test.assert(true)
+
+@test
+fn test_a_model_reference_is_a_registry_path_and_not_a_string() [io]
+    // A cache keyed on the string treats `llama3` and `llama3:latest`
+    // as two models when the server treats them as one.
+    match ollmodel.name_of("llama3")
+        Err(_) => test.assert(false)
+        Ok(n)  =>
+            test.assert(n.tag == "latest")
+            test.assert(n.namespace == "library")
+            test.assert(ollmodel.canonical(n) == "registry.ollama.ai/library/llama3:latest")
+
+    match ollmodel.name_of("registry.example.com/team/llama3:q4_K_M")
+        Err(_) => test.assert(false)
+        Ok(n)  =>
+            test.assert(n.host == "registry.example.com")
+            test.assert(n.tag == "q4_K_M")
+
+@test
+fn test_the_short_form_is_what_a_person_is_shown() [io]
+    match ollmodel.name_of("registry.ollama.ai/library/llama3:latest")
+        Err(_) => test.assert(false)
+        Ok(n)  => test.assert(ollmodel.short(n) == "llama3")
+
+@test
+fn test_a_tag_is_not_a_version_and_the_digest_is_the_identity() [io]
+    // Two machines that both pulled `llama3` on different days are
+    // running different weights under one name.
+    let body = "{\"models\":[{\"name\":\"llama3:latest\",\"digest\":\"sha256:aaa\",\"size\":4661224676,\"modified_at\":\"2026-09-01T10:00:00Z\",\"details\":{\"format\":\"gguf\",\"family\":\"llama\",\"parameter_size\":\"8.0B\",\"quantization_level\":\"Q4_0\"}}]}"
+
+    match ollmodel.decode_tags(body)
+        Err(_) => test.assert(false)
+        Ok(ts) =>
+            test.assert(list.len(ts) == 1)
+            match list.first(ts)
+                None    => test.assert(false)
+                Some(t) =>
+                    test.case("the digest is what a reproducible program records")
+                    test.assert(t.digest == "sha256:aaa")
+                    test.assert(t.details.quantization_level == "Q4_0")
+
+@test
+fn test_whether_a_model_is_on_the_gpu_is_a_question_only_ps_answers() [io]
+    // A tenfold speed difference that is invisible in every other
+    // answer the server gives.
+    let body = "{\"models\":[{\"name\":\"llama3:latest\",\"digest\":\"sha256:aaa\",\"size\":5137025024,\"size_vram\":0,\"expires_at\":\"2026-09-01T10:05:00Z\"}]}"
+
+    match ollmodel.decode_ps(body)
+        Err(_) => test.assert(false)
+        Ok(rs) =>
+            match list.first(rs)
+                None    => test.assert(false)
+                Some(r) =>
+                    test.case("this one is on the CPU")
+                    test.assert(ollmodel.is_on_gpu(r) == false)
+
+@test
+fn test_a_capability_is_asked_about_rather_than_found_out_from_a_400() [io]
+    // A model without the tools capability does not refuse a tool set,
+    // it ignores it and answers in prose.
+    let body = "{\"template\":\"{{ .Prompt }}\",\"capabilities\":[\"completion\"],\"details\":{\"family\":\"llama\"},\"model_info\":{}}"
+
+    match ollmodel.decode_show(body)
+        Err(_) => test.assert(false)
+        Ok(s)  =>
+            test.assert(ollmodel.can(s, "completion"))
+            test.assert(ollmodel.can(s, "tools") == false)
+
+@test
+fn test_a_modelfile_is_a_value_and_a_refusal_names_the_line() [io]
+    // A Modelfile is written by hand, and a refusal with no line
+    // number is one a person has to bisect.
+    match ollmodel.modelfile_of("FROM llama3\nSYSTEM be brief\n")
+        Err(_) => test.assert(false)
+        Ok(m)  =>
+            test.assert(list.len(m.instructions) == 2)
+            test.assert(ollmodel.base_of(m) == "llama3")
+
+    match ollmodel.modelfile_of("PARAMETER\n")
+        Ok(_)  => test.assert(false)
+        Err(_) => test.assert(true)
+
+@test
+fn test_a_multi_line_value_is_quoted_by_the_renderer() [io]
+    // Without triple quotes the second line is read as an unknown
+    // instruction, which is what a caller concatenating strings gets.
+    let m = ollmodel.with_instruction(ollmodel.from("llama3"),
+                                      OllSystem("be brief\nand kind"))
+
+    match ollmodel.render(m)
+        Err(_) => test.assert(false)
+        Ok(t)  => test.assert(t != "")
+
+@test
+fn test_the_batch_endpoint_is_chosen_by_the_request() [io]
+    // Ten thousand documents through the one-at-a-time endpoint is ten
+    // thousand round trips.
+    test.assert(ollembed.path_of(ollembed.embed_many("nomic-embed-text", ["a", "b"]))
+                == "/api/embed")
+    test.assert(ollembed.path_of(ollembed.embed("nomic-embed-text", "a"))
+                == "/api/embeddings")
+
+@test
+fn test_a_short_vector_or_a_nan_is_caught_here_and_not_in_an_index() [io]
+    // Downstream it is silent: the document is never the nearest, so
+    // it is simply never retrieved and nothing reports anything.
+    let body = "{\"model\":\"nomic-embed-text\",\"embeddings\":[[0.1,0.2],[0.3]]}"
+
+    match ollembed.decode(body)
+        Err(_) => test.assert(true)
+        Ok(e)  => test.assert(ollembed.is_well_formed(e) == false)
+
+@test
+fn test_the_dimension_is_measured_and_not_read_from_metadata() [io]
+    // `llama.embedding_length` is the hidden size, which for several
+    // embedding models is not the output dimension.
+    let body = "{\"model\":\"nomic-embed-text\",\"embeddings\":[[0.1,0.2,0.3]]}"
+
+    match ollembed.decode(body)
+        Err(_) => test.assert(false)
+        Ok(e)  =>
+            test.assert(ollembed.dimension(e) == 3)
+            match ollembed.first(e)
+                None    => test.assert(false)
+                Some(v) => test.assert(list.len(v) == 3)
+
+@test
+fn test_a_404_naming_a_model_is_a_repairable_state() [io]
+    // A hosted provider's 404 means the model does not exist; this
+    // one means it has not been pulled yet, and the repair is a call
+    // this package makes.
+    let f = ollfault.of_status(404, "model 'llama3' not found, try pulling it first")
+
+    test.assert(ollfault.wants_pull(f))
+    test.assert(ollfault.model_of(f) != "")
+    test.assert(ollfault.is_retryable(f) == false)
+
+@test
+fn test_a_reply_that_reported_no_timings_is_zeroes() [io]
+    // A server too old to report them is a fact about the server, not
+    // an error in the reply.
+    test.assert(ollgen.no_timings().eval_count == 0)
+    test.assert(ollgen.eval_rate(ollgen.no_timings()) == 0.0)

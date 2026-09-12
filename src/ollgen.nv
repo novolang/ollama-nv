@@ -1,0 +1,693 @@
+// ollgen.nv — `/api/generate` and `/api/chat`: the requests, the
+// replies, and the four things this API carries that its own
+// OpenAI-compatible endpoint drops.
+//
+// Every body here is a `todo()`; the signatures are the design.
+//
+// `[]` throughout.  A request is a value, a reply is a value.
+//
+// **WHY THIS PACKAGE EXISTS AT ALL**, given that the same server
+// answers `/v1/chat/completions` and llm-client-nv already speaks
+// that.  Four things live only here, and each is the reason somebody
+// runs a model locally rather than paying for one:
+//
+//   `keep_alive` — HOW LONG THE MODEL STAYS RESIDENT.  Loading a 7B
+//   model off disk takes seconds and the default eviction is five
+//   minutes; a program that answers one request a minute pays the load
+//   on every twelfth request and cannot say otherwise through `/v1`,
+//   which has no field for it.  `OllKeepAlive` is a value with a
+//   named forever and a named immediately, because "-1" and "0" are
+//   the two settings a caller most wants and the two a duration string
+//   spells least clearly.
+//
+//   `options` — THE WHOLE SAMPLING SET.  `num_ctx`, `num_predict`,
+//   `repeat_penalty`, `repeat_last_n`, `mirostat`, `num_gpu`,
+//   `num_thread`, `seed`.  `/v1` maps a handful and silently drops the
+//   rest, so a caller tuning a local model against it is tuning
+//   nothing.  `num_ctx` in particular is the one that decides whether
+//   a long prompt is truncated — and truncation here is SILENT.
+//
+//   `raw` — BYPASS THE TEMPLATE.  A caller that renders its own prompt
+//   (prompt-nv's `promptchat.render_chat` does exactly that) must be
+//   able to send it unwrapped, or the server applies a second chat
+//   template over the first and the model sees two system headers.
+//
+//   THE TIMINGS.  `prompt_eval_count` and `prompt_eval_duration`,
+//   `eval_count` and `eval_duration`, `load_duration`.  Tokens per
+//   second, split into prefill and decode, which is the measurement
+//   anybody running local inference is making and which `/v1`'s
+//   `usage` cannot express.
+//
+// AND ONE THING THE OTHER ENDPOINT DOES BETTER, said here so the
+// README is not the only place: if a program wants the hosted APIs and
+// this server behind ONE code path, `/v1` through llm-client-nv is
+// that path, and this module is what it gives up.
+
+use std.json
+use std.list
+use promptmsg
+
+// How long the model stays loaded after a request.
+pub enum OllKeepAlive
+    // The server's own default, currently five minutes.  Sent as no
+    // field at all.
+    OllKeepDefault
+    // Stay loaded until something else evicts it.  The setting a
+    // long-running program answering sporadic requests wants, and the
+    // one `/v1` cannot express.
+    OllKeepForever
+    // Unload as soon as this request finishes.  For a one-shot in a
+    // script, so the weights are not sitting in memory afterwards.
+    OllKeepNone
+    // A duration in seconds.
+    OllKeepSeconds(seconds: Int)
+
+// The field value the server expects.
+//
+// ```novo
+// use ollgen
+//
+// fn main() [io]
+//     println(ollgen.keep_alive_value(OllKeepForever))
+//     // : -1
+// ```
+pub fn keep_alive_value(k: OllKeepAlive) -> Str []
+    todo("ollama-nv.ollgen.keep_alive_value")
+
+// The sampling and runtime options this server takes.
+//
+// `-1` means "not set, let the server default" for every integer, and
+// a negative float means the same — because 0 is a meaningful
+// temperature and a meaningful `repeat_penalty`.
+pub struct OllOptions
+    // The context window IN TOKENS for this request.  **The one option
+    // whose wrong value is silent**: a prompt longer than `num_ctx` is
+    // TRUNCATED FROM THE FRONT by the server, with no field in the
+    // reply saying so, so a long conversation quietly loses its system
+    // message.  `ollmodel.context_length` is the ceiling, and
+    // `check` refuses a request that exceeds it.
+    num_ctx: Int
+    // The reply's cap in tokens.  `-2` means "fill the context", which
+    // is this server's own convention and is kept rather than
+    // normalised away.
+    num_predict: Int
+    temperature: Float
+    top_p: Float
+    top_k: Int
+    min_p: Float
+    repeat_penalty: Float
+    repeat_last_n: Int
+    // 0, 1 or 2.  Mirostat replaces top_k and top_p rather than
+    // combining with them, which is why it is here and not a flag.
+    mirostat: Int
+    mirostat_tau: Float
+    mirostat_eta: Float
+    seed: Int
+    stop: [Str]
+    // How many layers to put on the GPU.  The option that decides
+    // whether a model runs at ten tokens a second or one, and the one
+    // `/api/ps`'s `size_vram` reports the result of.
+    num_gpu: Int
+    num_thread: Int
+
+// Every option unset.
+//
+// ```novo
+// use ollgen
+//
+// fn main() [io]
+//     println("${ollgen.options().num_ctx}")
+//     // : -1
+// ```
+pub fn options() -> OllOptions []
+    todo("ollama-nv.ollgen.options")
+
+// The same options with a context window.
+//
+// ```novo
+// use ollgen
+//
+// fn main() [io]
+//     println("${ollgen.with_num_ctx(ollgen.options(), 8192).num_ctx}")
+//     // : 8192
+// ```
+pub fn with_num_ctx(o: OllOptions, n: Int) -> OllOptions []
+    todo("ollama-nv.ollgen.with_num_ctx")
+
+// The same options with a reply cap.
+//
+// ```novo
+// use ollgen
+//
+// fn main() [io]
+//     println("${ollgen.with_num_predict(ollgen.options(), 256).num_predict}")
+//     // : 256
+// ```
+pub fn with_num_predict(o: OllOptions, n: Int) -> OllOptions []
+    todo("ollama-nv.ollgen.with_num_predict")
+
+// The same options with a temperature.
+//
+// ```novo
+// use ollgen
+//
+// fn main() [io]
+//     println("${ollgen.with_temperature(ollgen.options(), 0.0).temperature}")
+// ```
+pub fn with_temperature(o: OllOptions, t: Float) -> OllOptions []
+    todo("ollama-nv.ollgen.with_temperature")
+
+// The same options with a seed.
+//
+// This server DOES take one, which the Anthropic dialect does not —
+// and with `temperature` at zero it is what makes a local run
+// reproducible.
+//
+// ```novo
+// use ollgen
+//
+// fn main() [io]
+//     println("${ollgen.with_seed(ollgen.options(), 7).seed}")
+//     // : 7
+// ```
+pub fn with_seed(o: OllOptions, seed: Int) -> OllOptions []
+    todo("ollama-nv.ollgen.with_seed")
+
+// The same options with a GPU layer count.
+//
+// ```novo
+// use ollgen
+//
+// fn main() [io]
+//     println("${ollgen.with_num_gpu(ollgen.options(), 33).num_gpu}")
+//     // : 33
+// ```
+pub fn with_num_gpu(o: OllOptions, n: Int) -> OllOptions []
+    todo("ollama-nv.ollgen.with_num_gpu")
+
+// The options as the server's `options` object.
+//
+// Only the fields a caller set: an unset field is ABSENT rather than
+// sent as a zero, which matters because this server treats a supplied
+// zero as a setting.
+//
+// ```novo
+// use ollgen
+// use std.json
+//
+// fn main() [io]
+//     println(json.type_of(ollgen.encode_options(ollgen.options())))
+//     // : object
+// ```
+pub fn encode_options(o: OllOptions) -> JsonValueH []
+    todo("ollama-nv.ollgen.encode_options")
+
+// What shape the reply must take.
+pub enum OllFormat
+    // Prose.
+    OllFormatText
+    // Valid JSON, unshaped — `"format": "json"`.
+    OllFormatJson
+    // Valid JSON matching a schema — `"format": {…}`, the schema
+    // itself as the field's value.  Constrained decoding, not a
+    // prompt, which is a stronger promise than most hosted endpoints
+    // make.
+    OllFormatSchema(schema: JsonValueH)
+
+// A `/api/generate` request: one prompt, no conversation.
+pub struct OllGenerate
+    model: Str
+    prompt_text: Str
+    // Text placed AFTER the prompt, for fill-in-the-middle.  Has no
+    // equivalent in any chat API, and is the reason `/api/generate`
+    // exists beside `/api/chat` at all.
+    suffix: Str
+    // A system prompt that overrides the Modelfile's.
+    sys_prompt: Str
+    // Base64-encoded images, for a vision model.
+    images: [Str]
+    // **BYPASS THE CHAT TEMPLATE.**  For a caller that rendered its own
+    // prompt — which is what prompt-nv's `promptchat.render_chat`
+    // produces.  Without it the server applies its template over the
+    // rendered text and the model sees two system headers.
+    raw: Bool
+    format: OllFormat
+    options: OllOptions
+    keep_alive: OllKeepAlive
+    // The token ids a previous reply returned, continuing that
+    // conversation without resending its text.  THE STATELESS
+    // CONTINUATION: the server keeps nothing between calls, and this
+    // array is the conversation state travelling in the caller's own
+    // hands.  Empty starts fresh.  See the README on where this and
+    // novollm's KV pool meet.
+    context: [Int]
+
+// A `/api/generate` request for a model and a prompt.
+//
+// ```novo
+// use ollgen
+//
+// fn main() [io]
+//     println(ollgen.generate("llama3", "why is the sky blue").model)
+//     // : llama3
+// ```
+pub fn generate(model: Str, prompt_text: Str) -> OllGenerate []
+    todo("ollama-nv.ollgen.generate")
+
+// The same request with options.
+//
+// ```novo
+// use ollgen
+//
+// fn main() [io]
+//     let g = ollgen.with_options(ollgen.generate("llama3", "hi"),
+//                                 ollgen.with_num_ctx(ollgen.options(), 4096))
+//     println("${g.options.num_ctx}")
+//     // : 4096
+// ```
+pub fn with_options(g: OllGenerate, o: OllOptions) -> OllGenerate []
+    todo("ollama-nv.ollgen.with_options")
+
+// The same request with a residency.
+//
+// ```novo
+// use ollgen
+//
+// fn main() [io]
+//     let g = ollgen.with_keep_alive(ollgen.generate("llama3", "hi"), OllKeepForever)
+//     println(ollgen.keep_alive_value(g.keep_alive))
+//     // : -1
+// ```
+pub fn with_keep_alive(g: OllGenerate, k: OllKeepAlive) -> OllGenerate []
+    todo("ollama-nv.ollgen.with_keep_alive")
+
+// The same request continuing a previous reply's context.
+//
+// ```novo
+// use ollgen
+//
+// fn main() [io]
+//     let g = ollgen.with_context(ollgen.generate("llama3", "and then"), [1, 2, 3])
+//     println("${list.len(g.context)}")
+//     // : 3
+// ```
+pub fn with_context(g: OllGenerate, context: [Int]) -> OllGenerate []
+    todo("ollama-nv.ollgen.with_context")
+
+// The same request with the chat template bypassed.
+//
+// ```novo
+// use ollgen
+//
+// fn main() [io]
+//     println("${ollgen.raw(ollgen.generate("llama3", "<s>hi")).raw}")
+//     // : true
+// ```
+pub fn raw(g: OllGenerate) -> OllGenerate []
+    todo("ollama-nv.ollgen.raw")
+
+// The `/api/generate` body.
+//
+// ```novo
+// use ollgen
+//
+// fn body(g: OllGenerate, stream: Bool) -> Bool
+//     match ollgen.encode_generate(g, stream)
+//         Ok(_)  => true
+//         Err(_) => false
+// ```
+pub fn encode_generate(g: OllGenerate, stream: Bool) -> Result<JsonValueH, OllFault> []
+    todo("ollama-nv.ollgen.encode_generate")
+
+// A `/api/chat` request: a conversation, templated by the server.
+pub struct OllChat
+    model: Str
+    // prompt-nv's conversation, the same value llm-client-nv renders
+    // into the hosted dialects.  Both packages take it rather than
+    // declaring a message type each, which is what lets a program move
+    // a conversation between a local model and a hosted one without
+    // converting anything.
+    convo: PromptConvo
+    // Base64-encoded images for the LAST user turn.
+    images: [Str]
+    // Tool definitions, as JSON Schema objects.  `ollmodel.can(s,
+    // "tools")` is the question to ask before sending any: a model
+    // without the capability does not refuse them, it ignores them and
+    // answers in prose.
+    tools: [JsonValueH]
+    format: OllFormat
+    options: OllOptions
+    keep_alive: OllKeepAlive
+
+// A `/api/chat` request for a model and a conversation.
+//
+// ```novo
+// use ollgen
+// use promptmsg
+//
+// fn main() [io]
+//     let c = promptmsg.convo([promptmsg.user("hello")])
+//     println(ollgen.chat("llama3", c).model)
+//     // : llama3
+// ```
+pub fn chat(model: Str, c: PromptConvo) -> OllChat []
+    todo("ollama-nv.ollgen.chat")
+
+// The same chat request with options.
+//
+// ```novo
+// use ollgen
+// use promptmsg
+//
+// fn main() [io]
+//     let c = ollgen.chat_with_options(
+//                 ollgen.chat("llama3", promptmsg.empty_convo()),
+//                 ollgen.with_num_ctx(ollgen.options(), 4096))
+//     println("${c.options.num_ctx}")
+//     // : 4096
+// ```
+pub fn chat_with_options(c: OllChat, o: OllOptions) -> OllChat []
+    todo("ollama-nv.ollgen.chat_with_options")
+
+// The same chat request offering tools.
+//
+// ```novo
+// use ollgen
+// use promptmsg
+// use std.json
+//
+// fn main() [io]
+//     let c = ollgen.chat_with_tools(
+//                 ollgen.chat("llama3", promptmsg.empty_convo()),
+//                 [json.object([])])
+//     println("${list.len(c.tools)}")
+//     // : 1
+// ```
+pub fn chat_with_tools(c: OllChat, tools: [JsonValueH]) -> OllChat []
+    todo("ollama-nv.ollgen.chat_with_tools")
+
+// The `/api/chat` body.
+//
+// ```novo
+// use ollgen
+//
+// fn body(c: OllChat, stream: Bool) -> Bool
+//     match ollgen.encode_chat(c, stream)
+//         Ok(_)  => true
+//         Err(_) => false
+// ```
+pub fn encode_chat(c: OllChat, stream: Bool) -> Result<JsonValueH, OllFault> []
+    todo("ollama-nv.ollgen.encode_chat")
+
+// Why a reply stopped.
+pub enum OllDone
+    // The model finished.
+    OllDoneStop
+    // The reply hit `num_predict`, or the context filled.  TRUNCATED,
+    // the same invisible state `LlmcStopMaxTokens` names for the
+    // hosted APIs.
+    OllDoneLength
+    // The object was a load or unload acknowledgement rather than a
+    // generation — what an empty-prompt request with a `keep_alive`
+    // answers, which is how a program preloads a model.
+    OllDoneLoad
+    OllDoneUnload
+    // A spelling this package does not know, carried verbatim.
+    OllDoneOther(raw: Str)
+
+// Whether the text is a whole answer.
+//
+// ```novo
+// use ollgen
+//
+// fn main() [io]
+//     println("${ollgen.is_complete(OllDoneLength)}")
+//     // : false
+// ```
+pub fn is_complete(d: OllDone) -> Bool []
+    todo("ollama-nv.ollgen.is_complete")
+
+// What one call cost, in nanoseconds and tokens.
+//
+// **THE MEASUREMENT `/v1`'s `usage` CANNOT EXPRESS.**  Prefill and
+// decode are different operations with different bottlenecks — one is
+// compute-bound and the other memory-bandwidth-bound — and a single
+// tokens-per-second figure over both hides which of them a change
+// helped.
+pub struct OllTimings
+    // Everything, including the load.
+    total_duration_ns: Int
+    // Reading the weights off disk.  Zero when the model was already
+    // resident, which is what `keep_alive` is for.
+    load_duration_ns: Int
+    prompt_eval_count: Int
+    prompt_eval_duration_ns: Int
+    eval_count: Int
+    eval_duration_ns: Int
+
+// Every field zero.
+//
+// ```novo
+// use ollgen
+//
+// fn main() [io]
+//     println("${ollgen.no_timings().eval_count}")
+//     // : 0
+// ```
+pub fn no_timings() -> OllTimings []
+    todo("ollama-nv.ollgen.no_timings")
+
+// Decode tokens per second.
+//
+// `eval_count` over `eval_duration`, which is the number people quote.
+// Zero when the reply produced no tokens.
+//
+// ```novo
+// use ollgen
+//
+// fn main() [io]
+//     println("${ollgen.eval_rate(ollgen.no_timings())}")
+// ```
+pub fn eval_rate(t: OllTimings) -> Float []
+    todo("ollama-nv.ollgen.eval_rate")
+
+// Prefill tokens per second.
+//
+// Published separately because it is the half a longer prompt changes
+// and the half a faster GPU changes most, and a caller that only had
+// the decode rate could not see either.
+//
+// ```novo
+// use ollgen
+//
+// fn main() [io]
+//     println("${ollgen.prompt_rate(ollgen.no_timings())}")
+// ```
+pub fn prompt_rate(t: OllTimings) -> Float []
+    todo("ollama-nv.ollgen.prompt_rate")
+
+// One reply, buffered or accumulated from a stream.
+pub struct OllReply
+    model: Str
+    // RFC 3339, as the server wrote it.
+    created_at: Str
+    // The generated text.  For `/api/chat` this is the assistant
+    // message's content.
+    text: Str
+    done: OllDone
+    // Tool calls the model asked for, as the server reported them.
+    // Left as JSON values rather than a typed call, because this
+    // server's tool-call shape is the OpenAI one and
+    // `llmcreply.LlmcToolCall` is where that is already modelled —
+    // `to_llmc_calls` is the conversion.
+    tool_calls: [JsonValueH]
+    // The token ids to pass to the next `/api/generate`.  Empty for
+    // `/api/chat`, which has no such field.
+    context: [Int]
+    timings: OllTimings
+
+// An empty reply, for an accumulator's zero and a test fixture.
+//
+// ```novo
+// use ollgen
+//
+// fn main() [io]
+//     println("${ollgen.empty_reply().text}")
+//     // :
+// ```
+pub fn empty_reply() -> OllReply []
+    todo("ollama-nv.ollgen.empty_reply")
+
+// A buffered `/api/generate` or `/api/chat` body as a reply.
+//
+// ```novo
+// use ollgen
+//
+// fn read(body: Str) -> Bool
+//     match ollgen.decode_reply(body)
+//         Ok(_)  => true
+//         Err(_) => false
+// ```
+pub fn decode_reply(body: Str) -> Result<OllReply, OllFault> []
+    todo("ollama-nv.ollgen.decode_reply")
+
+// One streamed object as what it said.
+//
+// Asks `ollnd.is_error` first, because this endpoint reports its own
+// failures inside a 200.
+//
+// ```novo
+// use ollgen
+//
+// fn read(line: Str) -> Bool
+//     match ollgen.chunk_of(line)
+//         Ok(_)  => true
+//         Err(_) => false
+// ```
+pub fn chunk_of(line: Str) -> Result<OllChunk, OllFault> []
+    todo("ollama-nv.ollgen.chunk_of")
+
+// One object of a streamed reply.
+pub struct OllChunk
+    // The new text this object carried.  A DELTA, not the text so far.
+    delta: Str
+    // True on the last object, which is also the only one carrying the
+    // timings and the context.
+    done: Bool
+    done_reason: OllDone
+    timings: OllTimings
+    context: [Int]
+
+// The accumulator a streamed reply is folded into.
+//
+// A VALUE the caller threads, so the loop is the caller's.
+pub struct OllStream
+    model: Str
+    text: Str
+    finished: Bool
+    done: OllDone
+    timings: OllTimings
+    context: [Int]
+
+// An empty accumulator.
+//
+// ```novo
+// use ollgen
+//
+// fn main() [io]
+//     println("${ollgen.stream().finished}")
+//     // : false
+// ```
+pub fn stream() -> OllStream []
+    todo("ollama-nv.ollgen.stream")
+
+// Fold one chunk into the accumulator.
+//
+// ```novo
+// use ollgen
+//
+// fn fold(s: OllStream, c: OllChunk) -> OllStream
+//     ollgen.apply(s, c)
+// ```
+pub fn apply(s: OllStream, c: OllChunk) -> OllStream []
+    todo("ollama-nv.ollgen.apply")
+
+// The reply as it stands, whether or not the stream finished.
+//
+// For a caller painting deltas, and for the one that wants to show a
+// partial answer after `finish` refused it.
+//
+// ```novo
+// use ollgen
+//
+// fn main() [io]
+//     println("${ollgen.partial(ollgen.stream()).text}")
+//     // :
+// ```
+pub fn partial(s: OllStream) -> OllReply []
+    todo("ollama-nv.ollgen.partial")
+
+// The finished reply, or a refusal.
+//
+// `OllStreamTruncated` when no object said `"done": true` — the local
+// equivalent of a dropped connection, and it happens here for a reason
+// that has no hosted counterpart: the server was killed, or the
+// machine ran out of memory mid-generation.  The text so far reads
+// exactly like an answer.
+//
+// ```novo
+// use ollgen
+//
+// fn main() [io]
+//     match ollgen.finish(ollgen.stream())
+//         Ok(_)  => println("finished")
+//         Err(_) => println("truncated")
+//     // : truncated
+// ```
+pub fn finish(s: OllStream) -> Result<OllReply, OllFault> []
+    todo("ollama-nv.ollgen.finish")
+
+// Whether a request can be sent as written.
+//
+// What it refuses, each otherwise a 400 or a silent truncation:
+//
+//   `num_ctx` ABOVE THE MODEL'S OWN CONTEXT LENGTH, which the server
+//   accepts and then does not honour.
+//
+//   A `raw` REQUEST WITH A SYSTEM PROMPT, which is a contradiction:
+//   `raw` says "do not template this" and `system` is a templating
+//   instruction.
+//
+//   IMAGES ON A MODEL WITH NO VISION CAPABILITY, which are dropped
+//   silently and leave the model answering about text that describes
+//   nothing.
+//
+//   A `context` ARRAY ON A `/api/chat` REQUEST, which that endpoint
+//   has no field for.
+//
+// `limit` is `ollmodel.context_length`'s answer, or -1 when the caller
+// has not asked the server.
+//
+// ```novo
+// use ollgen
+//
+// fn ok(g: OllGenerate) -> Bool
+//     match ollgen.check(g, 8192)
+//         Ok(_)  => true
+//         Err(_) => false
+// ```
+pub fn check(g: OllGenerate, limit: Int) -> Result<Int, OllFault> []
+    todo("ollama-nv.ollgen.check")
+
+// The reply's tool calls in llm-client-nv's vocabulary.
+//
+// This server reports tool calls in the OpenAI shape, and
+// `LlmcToolCall` already models that — id, name, and the arguments as
+// the text the provider sent.  Converting here rather than declaring a
+// second call type is what lets an agent loop written against
+// llm-client-nv run unchanged against a local model.
+//
+// ```novo
+// use ollgen
+//
+// fn calls(r: OllReply) -> Int
+//     list.len(ollgen.to_llmc_calls(r))
+// ```
+pub fn to_llmc_calls(r: OllReply) -> [LlmcToolCall] []
+    todo("ollama-nv.ollgen.to_llmc_calls")
+
+// The reply as llm-client-nv's, for a program that holds both.
+//
+// The stop reasons map — `OllDoneLength` is `LlmcStopMaxTokens` — and
+// the timings do NOT survive, because `LlmcUsage` has nowhere to put a
+// prefill duration.  Named rather than silently dropped: a caller
+// measuring local inference keeps `OllReply`.
+//
+// ```novo
+// use ollgen
+//
+// fn crossed(r: OllReply) -> Str
+//     ollgen.to_llmc_reply(r).text
+// ```
+pub fn to_llmc_reply(r: OllReply) -> LlmcReply []
+    todo("ollama-nv.ollgen.to_llmc_reply")

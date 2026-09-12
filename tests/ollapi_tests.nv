@@ -1,0 +1,317 @@
+// ollapi_tests.nv — the endpoints driven over bytes already in
+// memory, and the rest of the public surface.
+//
+// RED ON PURPOSE: every body under `src/` is a `todo()`, so every
+// assertion here reaches `not implemented: ollama-nv.<module>.<fn>`.
+//
+// THE COMPILER MAKES THE FIRST ASSERTION BEFORE THE RUN STARTS.
+// `OllScript` implements llm-client-nv's `LlmcTransport[]`, and the
+// calls that drive an endpoint over it carry no effect row at all.
+// That is this package borrowing the sibling's transport rather than
+// inventing a second one, checked by the toolchain.
+
+use std.test
+use std.bytes
+use std.list
+use ollapi
+use ollembed
+use ollgen
+use ollmodel
+use ollnd
+use ollpull
+use llmcreq
+use promptmsg
+use std.json
+
+// A transport over a recorded response.  It performs nothing.
+struct OllScript
+    status: Int
+    body: [u8]
+    open: Bool
+
+// A transport that costs nothing.
+//
+// ```novo ignore
+// use ollapi
+//
+// fn drive(s: OllScript, g: OllGenerate) -> Result<OllReply, OllFault>
+//     ollapi.generate(s, g)
+// ```
+impl LlmcTransport[] for OllScript
+    fn llmc_exchange(self, method: Str, path: Str, headers: [Str],
+                     body: [u8]) -> Result<LlmcHttpReply, LlmcFault>
+        Ok(LlmcHttpReply { status: self.status, headers: [], body: self.body,
+                           streamed: false })
+
+    fn llmc_open(self, method: Str, path: Str, headers: [Str],
+                 body: [u8]) -> Result<LlmcHttpReply, LlmcFault>
+        Ok(LlmcHttpReply { status: self.status, headers: [], body: [],
+                           streamed: true })
+
+    fn llmc_read(self, max: Int) -> Result<[u8], LlmcFault>
+        if self.open
+            Ok(self.body)
+        else
+            Ok([])
+
+    fn llmc_close(self) -> ?LlmcFault
+        None
+
+fn script(body: Str) -> OllScript
+    OllScript { status: 200, body: bytes.to_byte_list(bytes.from_str(body)),
+                open: true }
+
+@test
+fn test_a_whole_generate_runs_over_bytes_already_in_memory() [io]
+    let body = "{\"model\":\"llama3\",\"created_at\":\"2026-09-01T10:00:00Z\",\"response\":\"blue\",\"done\":true,\"done_reason\":\"stop\"}"
+
+    match ollapi.generate(script(body), ollgen.generate("llama3", "why"))
+        Err(_) => test.assert(false)
+        Ok(r)  => test.assert(r.text == "blue")
+
+@test
+fn test_a_chat_takes_the_same_conversation_the_hosted_client_takes() [io]
+    // Which is what lets a program move a conversation between a local
+    // model and a hosted one without converting anything.
+    let c = promptmsg.with_system(promptmsg.convo([promptmsg.user("hello")]),
+                                  "be brief")
+    let body = "{\"model\":\"llama3\",\"message\":{\"role\":\"assistant\",\"content\":\"hi\"},\"done\":true,\"done_reason\":\"stop\"}"
+
+    match ollapi.chat(script(body), ollgen.chat("llama3", c))
+        Err(_) => test.assert(false)
+        Ok(r)  => test.assert(r.text == "hi")
+
+@test
+fn test_a_pull_is_opened_and_pumped_rather_than_waited_for() [io]
+    // A 40 GB download is twenty minutes; there is no blocking call in
+    // this package and the README says why.
+    let body = "{\"status\":\"pulling manifest\"}\n{\"status\":\"success\"}\n"
+
+    match ollapi.pull_open(script(body), "llama3", false)
+        Err(_) => test.assert(false)
+        Ok(s)  =>
+            test.case("nothing has been read yet")
+            test.assert(s.read_bytes == 0)
+
+            match ollapi.pull_next(script(body), s)
+                Err(_)   => test.assert(false)
+                Ok(step) =>
+                    test.case("and one read answers the events AND folds them")
+                    test.assert(list.len(step.events) >= 1)
+                    test.assert(step.stream.state.status != "")
+
+@test
+fn test_a_streamed_chat_is_pumped_by_the_caller_s_own_loop() [io]
+    let body = "{\"model\":\"llama3\",\"message\":{\"role\":\"assistant\",\"content\":\"hi\"},\"done\":false}\n"
+    let g = ollgen.generate("llama3", "why")
+
+    match ollapi.generate_stream(script(body), g)
+        Err(_) => test.assert(false)
+        Ok(s)  =>
+            match ollapi.stream_next(script(body), s)
+                Err(_)   => test.assert(false)
+                Ok(step) => test.assert(list.len(step.chunks) >= 1)
+
+    match ollapi.chat_stream(script(body),
+                             ollgen.chat("llama3", promptmsg.empty_convo()))
+        Ok(_)  => test.assert(true)
+        Err(_) => test.assert(false)
+
+@test
+fn test_the_paths_are_asserted_without_a_server() [io]
+    test.assert(ollapi.path_of(OllEndpointChat) == "/api/chat")
+    test.assert(ollapi.path_of(OllEndpointGenerate) == "/api/generate")
+    test.assert(ollapi.path_of(OllEndpointTags) == "/api/tags")
+    test.assert(ollapi.path_of(OllEndpointShow) == "/api/show")
+    test.assert(ollapi.path_of(OllEndpointPs) == "/api/ps")
+    test.assert(ollapi.path_of(OllEndpointVersion) == "/api/version")
+    test.assert(ollapi.path_of(OllEndpointPull) == "/api/pull")
+    test.assert(ollapi.path_of(OllEndpointPush) == "/api/push")
+    test.assert(ollapi.path_of(OllEndpointCreate) == "/api/create")
+    test.assert(ollapi.path_of(OllEndpointDelete) == "/api/delete")
+    test.assert(ollapi.path_of(OllEndpointCopy) == "/api/copy")
+    test.assert(ollapi.path_of(OllEndpointEmbed) == "/api/embed")
+    test.assert(ollapi.path_of(OllEndpointEmbeddings) == "/api/embeddings")
+
+@test
+fn test_which_endpoints_stream_comes_from_the_endpoint() [io]
+    // Not from a `Content-Type` the server spells two ways across
+    // versions.
+    test.assert(ollapi.streams(OllEndpointPull))
+    test.assert(ollapi.streams(OllEndpointTags) == false)
+
+@test
+fn test_the_local_provider_carries_no_key() [io]
+    // This API takes no authentication, and a client that sent an
+    // Authorization header would be sending a secret to a process that
+    // ignores it.
+    let p = ollapi.local_provider()
+
+    test.assert(llmcreq.provider_base_url(p) == "http://127.0.0.1:11434")
+    test.assert(llmcreq.key_is_set(p) == false)
+
+    test.case("and a server elsewhere is the same value with another origin")
+    test.assert(llmcreq.provider_base_url(ollapi.provider_at("http://gpu:11434"))
+                == "http://gpu:11434")
+
+@test
+fn test_a_refused_connection_is_a_server_that_is_not_running() [io]
+    // The most common failure a program using this package will see,
+    // and it is not a network problem.
+    test.assert(ollapi.is_not_running(ollapi.local_provider(), "connection refused"))
+
+@test
+fn test_the_management_calls_answer_values() [io]
+    let tags = "{\"models\":[]}"
+    match ollapi.tags(script(tags))
+        Ok(ts) => test.assert(list.len(ts) == 0)
+        Err(_) => test.assert(false)
+
+    match ollapi.ps(script("{\"models\":[]}"))
+        Ok(rs) => test.assert(list.len(rs) == 0)
+        Err(_) => test.assert(false)
+
+    match ollapi.show(script("{\"capabilities\":[],\"details\":{},\"model_info\":{}}"), "llama3")
+        Ok(_)  => test.assert(true)
+        Err(_) => test.assert(false)
+
+    match ollapi.version(script("{\"version\":\"0.5.0\"}"))
+        Ok(v)  => test.assert(v == "0.5.0")
+        Err(_) => test.assert(false)
+
+@test
+fn test_a_model_is_removed_and_renamed_by_name() [io]
+    match ollapi.delete(script(""), "llama3")
+        Ok(_)  => test.assert(true)
+        Err(_) => test.assert(false)
+
+    match ollapi.copy(script(""), "llama3", "mine")
+        Ok(_)  => test.assert(true)
+        Err(_) => test.assert(false)
+
+@test
+fn test_a_model_is_warmed_and_evicted_without_paying_for_tokens() [io]
+    // A service that wants its first real request to be fast would
+    // otherwise send a throwaway prompt.
+    let body = "{\"model\":\"llama3\",\"done\":true,\"done_reason\":\"load\",\"response\":\"\"}"
+
+    match ollapi.preload(script(body), "llama3", OllKeepForever)
+        Err(_) => test.assert(false)
+        Ok(r)  => test.assert(r.text == "")
+
+    match ollapi.unload(script(body), "llama3")
+        Ok(_)  => test.assert(true)
+        Err(_) => test.assert(false)
+
+@test
+fn test_embeddings_come_back_over_the_same_transport() [io]
+    let body = "{\"model\":\"nomic-embed-text\",\"embeddings\":[[0.1,0.2]]}"
+
+    match ollapi.embed(script(body), ollembed.embed("nomic-embed-text", "hi"))
+        Err(_) => test.assert(false)
+        Ok(e)  => test.assert(ollembed.dimension(e) == 2)
+
+@test
+fn test_a_push_and_a_create_use_the_same_pump_as_a_pull() [io]
+    let body = "{\"status\":\"success\"}\n"
+
+    match ollapi.push_open(script(body), "me/llama3", false)
+        Ok(_)  => test.assert(true)
+        Err(_) => test.assert(false)
+
+    match ollapi.create_open(script(body), "mine", ollmodel.from("llama3"))
+        Ok(_)  => test.assert(true)
+        Err(_) => test.assert(false)
+
+@test
+fn test_the_rest_of_the_value_surface_answers_what_it_promised() [io]
+    test.case("a reference is checked without parsing it twice")
+    test.assert(ollmodel.is_reference("llama3:8b"))
+
+    test.case("the details of an empty object are empty")
+    test.assert(ollmodel.details_of(ollnd_empty()).family == "")
+    test.assert(ollmodel.tag_of(ollnd_empty()).name == "")
+
+    test.case("a context length is read out of the architecture facts")
+    match ollmodel.decode_show("{\"capabilities\":[],\"details\":{},\"model_info\":{\"llama.context_length\":8192}}")
+        Err(_) => test.assert(false)
+        Ok(s)  => test.assert(ollmodel.context_length(s) == 8192)
+
+fn ollnd_empty() -> JsonValueH
+    match ollnd.parse("{}")
+        Ok(v)  => v
+        Err(_) => json.object([])
+
+@test
+fn test_the_options_builders_answer_the_value_they_were_given() [io]
+    let o = ollgen.with_num_gpu(
+                ollgen.with_seed(
+                    ollgen.with_temperature(
+                        ollgen.with_num_predict(ollgen.options(), 256), 0.0),
+                        7),
+                        33)
+
+    test.assert(o.num_predict == 256)
+    test.assert(o.seed == 7)
+    test.assert(o.num_gpu == 33)
+
+@test
+fn test_a_request_is_built_by_value_in_both_shapes() [io]
+    let g = ollgen.with_keep_alive(ollgen.generate("llama3", "hi"), OllKeepNone)
+    test.assert(ollgen.keep_alive_value(g.keep_alive) == "0")
+
+    match ollgen.encode_generate(g, false)
+        Ok(_)  => test.assert(true)
+        Err(_) => test.assert(false)
+
+    let c = ollgen.chat_with_tools(
+                ollgen.chat_with_options(
+                    ollgen.chat("llama3", promptmsg.empty_convo()),
+                    ollgen.options()),
+                [])
+
+    match ollgen.encode_chat(c, true)
+        Ok(_)  => test.assert(true)
+        Err(_) => test.assert(false)
+
+@test
+fn test_a_reply_crosses_into_the_hosted_client_s_vocabulary() [io]
+    // An agent loop written against llm-client-nv runs unchanged
+    // against a local model; the timings do NOT survive, and that is
+    // named rather than silently dropped.
+    let r = ollgen.empty_reply()
+
+    test.assert(list.len(ollgen.to_llmc_calls(r)) == 0)
+    test.assert(ollgen.to_llmc_reply(r).text == "")
+
+@test
+fn test_an_embedding_request_takes_a_residency_and_encodes() [io]
+    let r = ollembed.with_keep_alive(ollembed.embed("nomic-embed-text", "hi"),
+                                     OllKeepForever)
+
+    match ollembed.encode(r)
+        Ok(_)  => test.assert(true)
+        Err(_) => test.assert(false)
+
+@test
+fn test_the_reader_is_bounded_and_reports_what_it_holds() [io]
+    test.assert(ollnd.reader_with(1024).max_object == 1024)
+    test.assert(ollnd.pending_len(ollnd.reader()) == 0)
+
+    match ollnd.lines_of([])
+        Ok(ls) => test.assert(list.len(ls) == 0)
+        Err(_) => test.assert(false)
+
+    match ollnd.error_of("{\"error\":\"nope\"}")
+        Some(_) => test.assert(true)
+        None    => test.assert(false)
+
+@test
+fn test_a_create_body_is_built_from_a_modelfile_value() [io]
+    match ollpull.encode_create("mine", ollmodel.from("llama3"))
+        Ok(_)  => test.assert(true)
+        Err(_) => test.assert(false)
+
+    match ollpull.encode_push("me/llama3", false)
+        Ok(_)  => test.assert(true)
+        Err(_) => test.assert(false)

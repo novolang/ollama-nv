@@ -1,0 +1,197 @@
+// ollembed.nv — `/api/embed`, and the older `/api/embeddings` beside
+// it.
+//
+// Every body here is a `todo()`; the signatures are the design.
+//
+// `[]` throughout.
+//
+// TWO ENDPOINTS, AND THE DIFFERENCE IS NOT COSMETIC.
+// `/api/embeddings` takes one `prompt` field and answers one `embedding`;
+// `/api/embed` takes an `input` that may be a string OR an array and
+// answers an `embeddings` array.  Both exist on current servers and
+// the older one is deprecated, so this module offers both and
+// `OllEmbedRequest.batch` decides which is sent — because a caller
+// embedding ten thousand documents against the one-at-a-time endpoint
+// pays ten thousand round trips and ten thousand model loads' worth of
+// scheduling, and that is a difference of minutes.
+//
+// THE VECTORS ARE `[Float]` AND NOT AN `NdFloat`, which is the seam
+// with embeddings-nv stated as a type.  embeddings-nv's arithmetic is
+// over `NdFloat` because its subject is a token-embedding MATRIX; what
+// comes off this wire is one row per input, and `ndfloat.of_list` is
+// the one line between them.  hnsw-nv's index takes `[Float]` rows
+// directly, so a program that embeds and indexes never builds a matrix
+// at all.
+//
+// AND NOTHING HERE NORMALISES.  A model's embeddings may or may not be
+// unit vectors, the server does not say which, and normalising on the
+// way in would make `embsim.dot` and `embsim.cosine` the same function
+// for a caller who needed to know they were not.  `embnorm.l2_normalize`
+// is the call, and it belongs where the arithmetic is.
+
+use std.list
+
+// One embedding request.
+pub struct OllEmbedRequest
+    model: Str
+    // The texts to embed.  One entry is the ordinary case; many is
+    // what `/api/embed` exists for.
+    inputs: [Str]
+    // Whether to use `/api/embed` with an array.  False sends
+    // `/api/embeddings` once per input, which is what an older server
+    // requires.
+    batch: Bool
+    // Whether to ask the server to normalise.  `/api/embed` has a
+    // `truncate` and a normalisation behaviour that has changed
+    // between versions, so this package ASKS rather than assumes and
+    // `embnorm.l2_normalize` is what a caller that needs certainty
+    // runs afterwards.
+    truncate: Bool
+    keep_alive: OllKeepAlive
+    options: OllOptions
+
+// A request for one text.
+//
+// ```novo
+// use ollembed
+//
+// fn main() [io]
+//     println("${list.len(ollembed.embed("nomic-embed-text", "hello").inputs)}")
+//     // : 1
+// ```
+pub fn embed(model: Str, text: Str) -> OllEmbedRequest []
+    todo("ollama-nv.ollembed.embed")
+
+// A request for many texts, through `/api/embed`.
+//
+// ```novo
+// use ollembed
+//
+// fn main() [io]
+//     let r = ollembed.embed_many("nomic-embed-text", ["a", "b"])
+//     println("${r.batch}")
+//     // : true
+// ```
+pub fn embed_many(model: Str, texts: [Str]) -> OllEmbedRequest []
+    todo("ollama-nv.ollembed.embed_many")
+
+// The same request with a residency.
+//
+// An embedding model is small and is asked for constantly, which makes
+// it the clearest case for `OllKeepForever`: the load is a second and
+// the default eviction is five minutes, so a service embedding one
+// query a minute spends a fifth of its latency on reloading.
+//
+// ```novo
+// use ollembed
+// use ollgen
+//
+// fn main() [io]
+//     let r = ollembed.with_keep_alive(ollembed.embed("nomic-embed-text", "hi"),
+//                                      OllKeepForever)
+//     println(ollgen.keep_alive_value(r.keep_alive))
+//     // : -1
+// ```
+pub fn with_keep_alive(r: OllEmbedRequest, k: OllKeepAlive) -> OllEmbedRequest []
+    todo("ollama-nv.ollembed.with_keep_alive")
+
+// The path this request goes to.
+//
+// `/api/embed` or `/api/embeddings`, from the `batch` field, so a
+// caller never writes either.
+//
+// ```novo
+// use ollembed
+//
+// fn main() [io]
+//     println(ollembed.path_of(ollembed.embed_many("nomic-embed-text", ["a"])))
+//     // : /api/embed
+// ```
+pub fn path_of(r: OllEmbedRequest) -> Str []
+    todo("ollama-nv.ollembed.path_of")
+
+// The request body.
+//
+// ```novo
+// use ollembed
+//
+// fn body(r: OllEmbedRequest) -> Bool
+//     match ollembed.encode(r)
+//         Ok(_)  => true
+//         Err(_) => false
+// ```
+pub fn encode(r: OllEmbedRequest) -> Result<JsonValueH, OllFault> []
+    todo("ollama-nv.ollembed.encode")
+
+// What came back.
+pub struct OllEmbedding
+    model: Str
+    // One row per input, in the order the inputs were given.  The
+    // ORDER is the only thing tying a vector to its text, so a caller
+    // that zipped them must not have reordered the inputs.
+    vectors: [[Float]]
+    timings: OllTimings
+
+// A buffered body as embeddings.
+//
+// Handles both endpoints' shapes: the older one's single `embedding`
+// becomes a one-row answer, so a caller reads the same value either
+// way.
+//
+// ```novo
+// use ollembed
+//
+// fn read(body: Str) -> Bool
+//     match ollembed.decode(body)
+//         Ok(_)  => true
+//         Err(_) => false
+// ```
+pub fn decode(body: Str) -> Result<OllEmbedding, OllFault> []
+    todo("ollama-nv.ollembed.decode")
+
+// The dimension of the vectors, or 0 when there are none.
+//
+// The number hnsw-nv's `HnswParams` needs and which no metadata
+// endpoint reports reliably: `ollmodel.context_length`'s neighbour
+// `llama.embedding_length` is the model's hidden size, which for
+// several embedding models is NOT the output dimension.  Measuring one
+// vector is the answer that is always right.
+//
+// ```novo
+// use ollembed
+//
+// fn dim(e: OllEmbedding) -> Int
+//     ollembed.dimension(e)
+// ```
+pub fn dimension(e: OllEmbedding) -> Int []
+    todo("ollama-nv.ollembed.dimension")
+
+// Whether every vector has the same length and every coordinate is
+// finite.
+//
+// Published because the failure it catches is silent downstream: a
+// short vector or a NaN goes into an index and comes back as a
+// distance that is never the nearest, so the document is simply never
+// retrieved and nothing reports anything.
+//
+// ```novo
+// use ollembed
+//
+// fn ok(e: OllEmbedding) -> Bool
+//     ollembed.is_well_formed(e)
+// ```
+pub fn is_well_formed(e: OllEmbedding) -> Bool []
+    todo("ollama-nv.ollembed.is_well_formed")
+
+// The first vector, for the one-input case.
+//
+// ```novo
+// use ollembed
+//
+// fn one(e: OllEmbedding) -> Int
+//     match ollembed.first(e)
+//         Some(v) => list.len(v)
+//         None    => 0
+// ```
+pub fn first(e: OllEmbedding) -> ?[Float] []
+    todo("ollama-nv.ollembed.first")

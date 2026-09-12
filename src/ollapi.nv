@@ -1,0 +1,387 @@
+// ollapi.nv — the client, and the only module in this package that
+// reaches a server.
+//
+// Every body here is a `todo()`; the signatures are the design.
+//
+// EVERY CALL HERE IS EFFECT-POLYMORPHIC OVER llm-client-nv's
+// `LlmcTransport[e]`, so a call costs exactly what the caller's
+// transport costs — `[net]` over TLS through a tunnel, `[io, net,
+// time, async]` over the standard library's HTTP client, nothing at
+// all over a recorded transcript in a test.  **This package declares
+// no transport of its own**, and that is the sibling dependency
+// earning its place: two clients that both invented a byte pipe would
+// be two pipes a program holding both has to configure separately.
+//
+// THE ENDPOINT PATHS ARE HERE AND NOWHERE ELSE.  `ollembed.path_of`
+// is the one exception, because which of the two embedding endpoints
+// to use is a property of the request rather than of the call.
+//
+// A LOCAL SERVER IS USUALLY PLAINTEXT ON LOOPBACK, which is why
+// `local_provider` builds an `LlmcProvider` with an empty key and an
+// `http://` origin: this API takes no authentication at all, and a
+// client that sent an `Authorization` header would be sending a secret
+// to a process that ignores it.  A server behind a tunnel or a reverse
+// proxy is the same value with a different origin and whatever headers
+// the proxy wants, through `llmcreq.with_header`.
+
+use llmcreq
+
+// An `LlmcProvider` pointed at a local server.
+//
+// The OpenAI-compatible endpoint on the same server is
+// `llmcreq.compatible(base_url, "")`, and a program that wants one
+// code path across hosted and local models uses that and never needs
+// this package.  This provider is the same origin with the dialect
+// field unused, because `/api/*` is neither dialect.
+//
+// ```novo
+// use ollapi
+// use llmcreq
+//
+// fn main() [io]
+//     println(llmcreq.provider_base_url(ollapi.local_provider()))
+//     // : http://127.0.0.1:11434
+// ```
+pub fn local_provider() -> LlmcProvider []
+    todo("ollama-nv.ollapi.local_provider")
+
+// A provider for a server at another origin.
+//
+// ```novo
+// use ollapi
+// use llmcreq
+//
+// fn main() [io]
+//     let p = ollapi.provider_at("http://gpu-box.example:11434")
+//     println(llmcreq.provider_base_url(p))
+//     // : http://gpu-box.example:11434
+// ```
+pub fn provider_at(base_url: Str) -> LlmcProvider []
+    todo("ollama-nv.ollapi.provider_at")
+
+// One buffered `/api/generate`.
+//
+// `[e]`: whatever the transport costs.
+//
+// ```novo ignore
+// use ollapi
+//
+// fn ask(t: LlmcStdHttp, g: OllGenerate) -> Result<OllReply, OllFault> [io, net, time, async]
+//     ollapi.generate(t, g)
+// ```
+pub fn generate<T: LlmcTransport[e]>(t: T, g: OllGenerate) -> Result<OllReply, OllFault> [e]
+    todo("ollama-nv.ollapi.generate")
+
+// One buffered `/api/chat`.
+//
+// ```novo ignore
+// use ollapi
+//
+// fn ask(t: LlmcStdHttp, c: OllChat) -> Result<OllReply, OllFault> [io, net, time, async]
+//     ollapi.chat(t, c)
+// ```
+pub fn chat<T: LlmcTransport[e]>(t: T, c: OllChat) -> Result<OllReply, OllFault> [e]
+    todo("ollama-nv.ollapi.chat")
+
+// A streamed reply in progress: the line reader, the accumulator, and
+// the bytes read so far.
+//
+// A VALUE the caller threads through `stream_next`, so the loop is the
+// caller's.
+pub struct OllStreamState
+    reader: OllNdReader
+    acc: OllStream
+    read_bytes: Int
+
+// Open a streamed `/api/generate` and answer the state to pump.
+//
+// ```novo ignore
+// use ollapi
+//
+// fn open(t: LlmcStdHttp, g: OllGenerate) -> Result<OllStreamState, OllFault> [io, net, time, async]
+//     ollapi.generate_stream(t, g)
+// ```
+pub fn generate_stream<T: LlmcTransport[e]>(t: T,
+                                            g: OllGenerate) -> Result<OllStreamState, OllFault> [e]
+    todo("ollama-nv.ollapi.generate_stream")
+
+// Open a streamed `/api/chat` and answer the state to pump.
+//
+// ```novo ignore
+// use ollapi
+//
+// fn open(t: LlmcStdHttp, c: OllChat) -> Result<OllStreamState, OllFault> [io, net, time, async]
+//     ollapi.chat_stream(t, c)
+// ```
+pub fn chat_stream<T: LlmcTransport[e]>(t: T, c: OllChat) -> Result<OllStreamState, OllFault> [e]
+    todo("ollama-nv.ollapi.chat_stream")
+
+// A stream's state and the chunks one read produced.
+pub struct OllStreamStep
+    state: OllStreamState
+    chunks: [OllChunk]
+
+// Read more of a streamed reply.
+//
+// An EMPTY chunk list means the bytes read did not finish an object,
+// not that the stream ended: `state.acc.finished` is the end
+// condition, and `ollgen.finish` turns it into a reply.
+//
+// ```novo ignore
+// use ollapi
+//
+// fn pump(t: LlmcStdHttp, s: OllStreamState) -> Result<OllStreamStep, OllFault> [io, net, time, async]
+//     ollapi.stream_next(t, s)
+// ```
+pub fn stream_next<T: LlmcTransport[e]>(t: T,
+                                        s: OllStreamState) -> Result<OllStreamStep, OllFault> [e]
+    todo("ollama-nv.ollapi.stream_next")
+
+// One `/api/embed` or `/api/embeddings`.
+//
+// ```novo ignore
+// use ollapi
+//
+// fn vecs(t: LlmcStdHttp, r: OllEmbedRequest) -> Result<OllEmbedding, OllFault> [io, net, time, async]
+//     ollapi.embed(t, r)
+// ```
+pub fn embed<T: LlmcTransport[e]>(t: T, r: OllEmbedRequest) -> Result<OllEmbedding, OllFault> [e]
+    todo("ollama-nv.ollapi.embed")
+
+// `/api/tags` — every model on the machine.
+//
+// ```novo ignore
+// use ollapi
+//
+// fn models(t: LlmcStdHttp) -> Result<[OllTag], OllFault> [io, net, time, async]
+//     ollapi.tags(t)
+// ```
+pub fn tags<T: LlmcTransport[e]>(t: T) -> Result<[OllTag], OllFault> [e]
+    todo("ollama-nv.ollapi.tags")
+
+// `/api/show` — one model's Modelfile, template, architecture facts
+// and capabilities.
+//
+// ```novo ignore
+// use ollapi
+//
+// fn about(t: LlmcStdHttp, model: Str) -> Result<OllShow, OllFault> [io, net, time, async]
+//     ollapi.show(t, model)
+// ```
+pub fn show<T: LlmcTransport[e]>(t: T, model: Str) -> Result<OllShow, OllFault> [e]
+    todo("ollama-nv.ollapi.show")
+
+// `/api/ps` — what is loaded right now, and how much of it is on the
+// GPU.
+//
+// The management call with no counterpart in any hosted API, because
+// no hosted API has a machine the caller is responsible for.
+//
+// ```novo ignore
+// use ollapi
+//
+// fn loaded(t: LlmcStdHttp) -> Result<[OllResident], OllFault> [io, net, time, async]
+//     ollapi.ps(t)
+// ```
+pub fn ps<T: LlmcTransport[e]>(t: T) -> Result<[OllResident], OllFault> [e]
+    todo("ollama-nv.ollapi.ps")
+
+// `/api/version` — the server's version string.
+//
+// Worth having because this API's shapes have changed between
+// versions — `/api/embed` did not always exist — and a client that
+// asked once can say so rather than failing obscurely.
+//
+// ```novo ignore
+// use ollapi
+//
+// fn v(t: LlmcStdHttp) -> Result<Str, OllFault> [io, net, time, async]
+//     ollapi.version(t)
+// ```
+pub fn version<T: LlmcTransport[e]>(t: T) -> Result<Str, OllFault> [e]
+    todo("ollama-nv.ollapi.version")
+
+// `/api/delete` — remove a model from the machine.
+//
+// ```novo ignore
+// use ollapi
+//
+// fn rm(t: LlmcStdHttp, model: Str) -> Result<Unit, OllFault> [io, net, time, async]
+//     ollapi.delete(t, model)
+// ```
+pub fn delete<T: LlmcTransport[e]>(t: T, model: Str) -> Result<Unit, OllFault> [e]
+    todo("ollama-nv.ollapi.delete")
+
+// `/api/copy` — give an existing model a second name.
+//
+// ```novo ignore
+// use ollapi
+//
+// fn cp(t: LlmcStdHttp, src: Str, dst: Str) -> Result<Unit, OllFault> [io, net, time, async]
+//     ollapi.copy(t, src, dst)
+// ```
+pub fn copy<T: LlmcTransport[e]>(t: T, source: Str, destination: Str) -> Result<Unit, OllFault> [e]
+    todo("ollama-nv.ollapi.copy")
+
+// Open a `/api/pull` and answer the state to pump.
+//
+// **NOT A CALL THAT RETURNS WHEN THE DOWNLOAD FINISHES.**  A 40 GB
+// pull is twenty minutes, so the shape is open-and-pump: this answers
+// immediately, `pull_next` reads more, and `ollpull.overall` is what a
+// caller draws.  A blocking `pull` does not exist in this package, and
+// the README says why.
+//
+// ```novo ignore
+// use ollapi
+//
+// fn start(t: LlmcStdHttp, model: Str) -> Result<OllPullStream, OllFault> [io, net, time, async]
+//     ollapi.pull_open(t, model, false)
+// ```
+pub fn pull_open<T: LlmcTransport[e]>(t: T, model: Str,
+                                      insecure: Bool) -> Result<OllPullStream, OllFault> [e]
+    todo("ollama-nv.ollapi.pull_open")
+
+// A pull in progress: the line reader and the accumulated state.
+pub struct OllPullStream
+    reader: OllNdReader
+    state: OllPullState
+    read_bytes: Int
+
+// A pull's state and the events one read produced.
+pub struct OllPullStep
+    stream: OllPullStream
+    events: [OllPullEvent]
+
+// Read more of a pull.
+//
+// The events are answered as well as folded, so a caller can log each
+// one and draw from the folded state without walking the list twice.
+//
+// ```novo ignore
+// use ollapi
+//
+// fn pump(t: LlmcStdHttp, s: OllPullStream) -> Result<OllPullStep, OllFault> [io, net, time, async]
+//     ollapi.pull_next(t, s)
+// ```
+pub fn pull_next<T: LlmcTransport[e]>(t: T, s: OllPullStream) -> Result<OllPullStep, OllFault> [e]
+    todo("ollama-nv.ollapi.pull_next")
+
+// Open a `/api/push`, with the same pump.
+//
+// ```novo ignore
+// use ollapi
+//
+// fn start(t: LlmcStdHttp, model: Str) -> Result<OllPullStream, OllFault> [io, net, time, async]
+//     ollapi.push_open(t, model, false)
+// ```
+pub fn push_open<T: LlmcTransport[e]>(t: T, model: Str,
+                                      insecure: Bool) -> Result<OllPullStream, OllFault> [e]
+    todo("ollama-nv.ollapi.push_open")
+
+// Open a `/api/create`, with the same pump.
+//
+// ```novo ignore
+// use ollapi
+//
+// fn start(t: LlmcStdHttp, name: Str, m: OllModelfile) -> Result<OllPullStream, OllFault> [io, net, time, async]
+//     ollapi.create_open(t, name, m)
+// ```
+pub fn create_open<T: LlmcTransport[e]>(t: T, name: Str,
+                                        m: OllModelfile) -> Result<OllPullStream, OllFault> [e]
+    todo("ollama-nv.ollapi.create_open")
+
+// Load a model into memory without generating anything.
+//
+// An empty prompt with a residency, which is this server's own
+// convention and answers `OllDoneLoad`.  Published because a service
+// that wants its first real request to be fast has to do exactly this
+// and would otherwise send a throwaway prompt and pay for its tokens.
+//
+// ```novo ignore
+// use ollapi
+//
+// fn warm(t: LlmcStdHttp, model: Str) -> Result<OllReply, OllFault> [io, net, time, async]
+//     ollapi.preload(t, model, OllKeepForever)
+// ```
+pub fn preload<T: LlmcTransport[e]>(t: T, model: Str,
+                                    k: OllKeepAlive) -> Result<OllReply, OllFault> [e]
+    todo("ollama-nv.ollapi.preload")
+
+// Unload a model from memory now.
+//
+// `OllKeepNone` on an empty prompt.  The other half of `preload`, and
+// what a program that has finished with a large model owes a machine
+// somebody else is also using.
+//
+// ```novo ignore
+// use ollapi
+//
+// fn evict(t: LlmcStdHttp, model: Str) -> Result<OllReply, OllFault> [io, net, time, async]
+//     ollapi.unload(t, model)
+// ```
+pub fn unload<T: LlmcTransport[e]>(t: T, model: Str) -> Result<OllReply, OllFault> [e]
+    todo("ollama-nv.ollapi.unload")
+
+// The path an endpoint is reached at.
+//
+// `[]`, and published, so a caller driving its own transport never
+// writes a path — and so a test asserts the paths without a server.
+//
+// ```novo
+// use ollapi
+//
+// fn main() [io]
+//     println(ollapi.path_of(OllEndpointChat))
+//     // : /api/chat
+// ```
+pub fn path_of(e: OllEndpoint) -> Str []
+    todo("ollama-nv.ollapi.path_of")
+
+// One endpoint of this API.
+pub enum OllEndpoint
+    OllEndpointGenerate
+    OllEndpointChat
+    OllEndpointEmbed
+    OllEndpointEmbeddings
+    OllEndpointTags
+    OllEndpointShow
+    OllEndpointPs
+    OllEndpointVersion
+    OllEndpointPull
+    OllEndpointPush
+    OllEndpointCreate
+    OllEndpointDelete
+    OllEndpointCopy
+
+// Whether an endpoint streams newline-delimited objects.
+//
+// The question that decides which reader to drive, answered from the
+// endpoint rather than from a `Content-Type` the server sets to
+// `application/x-ndjson` on some versions and `application/json` on
+// others.
+//
+// ```novo
+// use ollapi
+//
+// fn main() [io]
+//     println("${ollapi.streams(OllEndpointPull)}")
+//     // : true
+// ```
+pub fn streams(e: OllEndpoint) -> Bool []
+    todo("ollama-nv.ollapi.streams")
+
+// Whether a reply's status and body mean the server is simply not
+// running.
+//
+// The most common failure a program using this package will see, and
+// the one that is not a network problem: `ollama serve` is not up.
+//
+// ```novo
+// use ollapi
+//
+// fn main() [io]
+//     println("${ollapi.is_not_running(ollapi.local_provider(), "connection refused")}")
+//     // : true
+// ```
+pub fn is_not_running(p: LlmcProvider, transport_message: Str) -> Bool []
+    todo("ollama-nv.ollapi.is_not_running")

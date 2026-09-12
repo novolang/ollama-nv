@@ -1,0 +1,160 @@
+// ollfault.nv — why a call to the local server did not produce what
+// was asked for.
+//
+// Every body here is a `todo()`; the signatures are the design.
+//
+// `[]` throughout.
+//
+// A SEPARATE VOCABULARY FROM `LlmcFault`, AND THAT IS THE DESIGN
+// RATHER THAN DUPLICATION.  The two servers fail differently, and the
+// differences are the ones a caller branches on:
+//
+//   THE MODEL IS NOT ON THIS MACHINE.  A hosted provider answers 404
+//   for a model that does not exist and there is nothing to do about
+//   it; a local server answers 404 for a model that has not been
+//   pulled YET, and the repair is `ollapi.pull`.  Two different
+//   sentences and two different next steps, so `OllModelNotPulled`
+//   carries the name and says which.
+//
+//   THE SERVER IS NOT RUNNING.  `127.0.0.1:11434` refusing a
+//   connection is the single most common failure a program using this
+//   package will see, and it is not a network problem — it means
+//   `ollama serve` is not up.  `OllServerNotRunning` says that in
+//   words, because "connection refused" sends a person to their
+//   firewall.
+//
+//   THE STREAM REPORTS ITS OWN FAILURE INSIDE A 200.  `/api/pull`
+//   answers 200 and then writes `{"error": "..."}` as one of its
+//   newline-delimited objects.  A client that checked the status
+//   reports success for a pull that downloaded nothing, which is the
+//   quiet failure this package exists to stop; `OllStreamError` is
+//   what `ollpull.event_of` answers for that line.
+//
+//   THERE IS NO QUOTA AND NO RATE LIMIT.  Nothing here corresponds to
+//   a 429, and the resource that runs out is memory: a model larger
+//   than the machine's RAM or VRAM fails at LOAD time, minutes into a
+//   call, with a message about allocation.  `OllModelLoadFailed`
+//   carries it.
+
+// Why a call did not produce what was asked for.
+pub enum OllFault
+    // Nothing is listening on the server's address.  `ollama serve` is
+    // not running, or is bound elsewhere.
+    OllServerNotRunning(address: Str)
+    // The model is not on this machine.  `ollapi.pull` is the repair,
+    // and that is why this is not the same variant as a hosted
+    // provider's 404.
+    OllModelNotPulled(model: Str)
+    // The model exists and could not be loaded — almost always
+    // memory.  Arrives minutes into a call, not at the start.
+    OllModelLoadFailed(model: Str, message: Str)
+    // A 400: the request as written is wrong.
+    OllBadRequest(message: Str)
+    // A 5xx from the server.
+    OllServerError(status: Int, message: Str)
+    // The transport failed.
+    OllTransportFailed(message: Str)
+    // An `{"error": …}` object INSIDE a 200 stream.  The failure a
+    // status check does not see.
+    OllStreamError(message: Str)
+    // A newline-delimited stream ended without its `"done": true`
+    // object.  The download or the generation stopped partway, and
+    // what arrived reads like a result.
+    OllStreamTruncated(objects_seen: Int)
+    // A 200 whose body was not the shape the endpoint promises.
+    OllMalformedReply(what: Str)
+    // A model reference this package will not send: an empty name, a
+    // tag with a slash in it, a digest that is not hexadecimal.
+    OllBadModelName(name: Str)
+    // A Modelfile instruction this package does not know, or one whose
+    // argument is missing.
+    OllBadModelfile(line: Int, what: Str)
+
+// Whether trying again could produce a different answer.
+//
+// TRUE for `OllTransportFailed` and `OllServerError`; false for
+// everything else — and `OllModelNotPulled` is false ON PURPOSE, even
+// though the repair exists, because the repair is a different call and
+// not a retry of this one.
+//
+// ```novo
+// use ollfault
+//
+// fn main() [io]
+//     println("${ollfault.is_retryable(OllModelNotPulled("llama3"))}")
+//     // : false
+// ```
+pub fn is_retryable(f: OllFault) -> Bool []
+    todo("ollama-nv.ollfault.is_retryable")
+
+// Whether a pull would fix it.
+//
+// The one question that has no equivalent against a hosted provider,
+// and the reason `OllModelNotPulled` is its own variant: a program can
+// repair this failure by itself.
+//
+// ```novo
+// use ollfault
+//
+// fn main() [io]
+//     println("${ollfault.wants_pull(OllModelNotPulled("llama3"))}")
+//     // : true
+// ```
+pub fn wants_pull(f: OllFault) -> Bool []
+    todo("ollama-nv.ollfault.wants_pull")
+
+// The model a fault names, or empty.
+//
+// ```novo
+// use ollfault
+//
+// fn main() [io]
+//     println(ollfault.model_of(OllModelNotPulled("llama3")))
+//     // : llama3
+// ```
+pub fn model_of(f: OllFault) -> Str []
+    todo("ollama-nv.ollfault.model_of")
+
+// The fault a status and a body imply.
+//
+// A 404 whose body names a model becomes `OllModelNotPulled`, which is
+// the mapping that turns a status into a repairable state.
+//
+// ```novo
+// use ollfault
+//
+// fn main() [io]
+//     println("${ollfault.wants_pull(ollfault.of_status(404, "model 'llama3' not found"))}")
+//     // : true
+// ```
+pub fn of_status(status: Int, body: Str) -> OllFault []
+    todo("ollama-nv.ollfault.of_status")
+
+// The rule every `OllFault` is printed by: say what the server's state
+// is, and what would change it.
+//
+// `Result<T, E>` requires `E: Error` (SPEC § 3.4), so this impl is what
+// makes every fallible signature in the package spellable.  It carries
+// a body on an interface release because a panic reporting a fault
+// through a `todo()` would print the wrong sentence.
+//
+// ```novo ignore
+// use ollfault
+//
+// fn why(f: OllFault) -> Str
+//     f.message()
+// ```
+impl Error for OllFault
+    fn message(self) -> Str
+        match self
+            OllServerNotRunning(addr)      => "nothing is listening on ${addr} — is `ollama serve` running?"
+            OllModelNotPulled(model)       => "${model} is not on this machine — pull it first"
+            OllModelLoadFailed(model, why) => "${model} could not be loaded: ${why}"
+            OllBadRequest(why)             => "the request was refused: ${why}"
+            OllServerError(status, why)    => "${status} from the server: ${why}"
+            OllTransportFailed(why)        => "the request never completed: ${why}"
+            OllStreamError(why)            => "the stream reported a failure inside a 200: ${why}"
+            OllStreamTruncated(seen)       => "the stream ended after ${seen} objects with no done marker"
+            OllMalformedReply(what)        => "the reply had no ${what}"
+            OllBadModelName(name)          => "${name} is not a model reference this package will send"
+            OllBadModelfile(line, what)    => "line ${line} of the Modelfile: ${what}"

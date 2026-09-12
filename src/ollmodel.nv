@@ -1,0 +1,385 @@
+// ollmodel.nv — a model reference, and the Modelfile that makes one.
+//
+// Every body here is a `todo()`; the signatures are the design.
+//
+// `[]` throughout.
+//
+// A MODEL NAME HERE IS A REGISTRY REFERENCE AND NOT A STRING.
+// `llama3`, `llama3:8b`, `library/llama3:latest` and
+// `registry.example.com/team/llama3:q4_K_M` are all the same grammar,
+// and the parts a program needs are different from the parts it
+// prints: a cache keyed on the string treats `llama3` and
+// `llama3:latest` as two models when the server treats them as one.
+// `OllModelName` is the parse, and `canonical` is the answer to that.
+//
+// AND A TAG IS NOT A VERSION.  `latest` moves, exactly as a container
+// tag does, so two machines that both `pull llama3` can be running
+// different weights.  `OllDetails.digest` is the identity, `ollapi.show`
+// is where it comes from, and a program that needs reproducibility
+// records the digest rather than the name it asked for.
+
+use std.json
+use std.list
+
+// The default address `ollama serve` listens on.
+pub const OLL_DEFAULT_BASE_URL = "http://127.0.0.1:11434"
+
+// The tag a bare model name means.
+pub const OLL_DEFAULT_TAG = "latest"
+
+// A model reference, split.
+pub struct OllModelName
+    // `registry.ollama.ai` when the reference named none.
+    host: Str
+    // `library` when the reference named none.
+    namespace: Str
+    // `llama3`.
+    model: Str
+    // `latest` when the reference named none.  NOT A VERSION: it
+    // moves, so `OllDetails.digest` is what a reproducible program
+    // records.
+    tag: Str
+
+// Parse a model reference.
+//
+// ```novo
+// use ollmodel
+//
+// fn main() [io]
+//     match ollmodel.name_of("llama3")
+//         Ok(n)  => println(n.tag)
+//         Err(_) => println("refused")
+//     // : latest
+// ```
+pub fn name_of(reference: Str) -> Result<OllModelName, OllFault> []
+    todo("ollama-nv.ollmodel.name_of")
+
+// The reference as the server spells it, with every default filled in.
+//
+// The key a cache should use.  A program keyed on the string it was
+// given has `llama3` and `llama3:latest` as two entries for one model.
+//
+// ```novo
+// use ollmodel
+//
+// fn main() [io]
+//     match ollmodel.name_of("llama3")
+//         Ok(n)  => println(ollmodel.canonical(n))
+//         Err(_) => println("refused")
+//     // : registry.ollama.ai/library/llama3:latest
+// ```
+pub fn canonical(n: OllModelName) -> Str []
+    todo("ollama-nv.ollmodel.canonical")
+
+// The shortest reference that still names this model.
+//
+// What to show a person: `llama3` rather than the canonical form.
+//
+// ```novo
+// use ollmodel
+//
+// fn main() [io]
+//     match ollmodel.name_of("registry.ollama.ai/library/llama3:latest")
+//         Ok(n)  => println(ollmodel.short(n))
+//         Err(_) => println("refused")
+//     // : llama3
+// ```
+pub fn short(n: OllModelName) -> Str []
+    todo("ollama-nv.ollmodel.short")
+
+// Whether a reference is one this package will send.
+//
+// ```novo
+// use ollmodel
+//
+// fn main() [io]
+//     println("${ollmodel.is_reference("llama3:8b")}")
+//     // : true
+// ```
+pub fn is_reference(reference: Str) -> Bool []
+    todo("ollama-nv.ollmodel.is_reference")
+
+// One model, as `/api/tags` lists it.
+pub struct OllTag
+    name: Str
+    // The manifest digest.  THE IDENTITY: two machines whose `latest`
+    // resolved on different days have different digests under the same
+    // name.
+    digest: Str
+    size_bytes: Int
+    // RFC 3339, as the server wrote it.  A `Str` and not a parsed
+    // instant, because this package has no clock and calendar-nv is
+    // not a dependency it earns.
+    modified_at: Str
+    details: OllDetails
+
+// What the server knows about a model's weights.
+pub struct OllDetails
+    // `gguf`.
+    format: Str
+    // `llama`, `qwen2`, `gemma3`.
+    family: Str
+    families: [Str]
+    // `8.0B`, as the server writes it — a label, not a number.
+    parameter_size: Str
+    // `Q4_K_M`.  The quantisation the file carries, which is what
+    // decides how much memory the load needs and therefore whether
+    // `OllModelLoadFailed` is coming.
+    quantization_level: Str
+
+// The details a `/api/tags` or `/api/show` object carries.
+//
+// ```novo
+// use ollmodel
+// use std.json
+//
+// fn main() [io]
+//     println(ollmodel.details_of(json.object([])).family)
+//     // :
+// ```
+pub fn details_of(v: JsonValueH) -> OllDetails []
+    todo("ollama-nv.ollmodel.details_of")
+
+// One entry of a `/api/tags` list.
+//
+// ```novo
+// use ollmodel
+// use std.json
+//
+// fn main() [io]
+//     println(ollmodel.tag_of(json.object([])).name)
+//     // :
+// ```
+pub fn tag_of(v: JsonValueH) -> OllTag []
+    todo("ollama-nv.ollmodel.tag_of")
+
+// A whole `/api/tags` body.
+//
+// ```novo
+// use ollmodel
+//
+// fn main() [io]
+//     match ollmodel.decode_tags("{\"models\":[]}")
+//         Ok(ts) => println("${list.len(ts)}")
+//         Err(_) => println("refused")
+//     // : 0
+// ```
+pub fn decode_tags(body: Str) -> Result<[OllTag], OllFault> []
+    todo("ollama-nv.ollmodel.decode_tags")
+
+// A model currently resident in memory, as `/api/ps` lists it.
+//
+// The endpoint that has NO equivalent anywhere in the hosted APIs, and
+// the one a program managing a machine actually needs: what is loaded,
+// how much it is using, and when it will be evicted.
+pub struct OllResident
+    name: Str
+    digest: Str
+    size_bytes: Int
+    // How much of `size_bytes` is on the GPU.  Zero means the model is
+    // running on the CPU, which is a performance difference of an
+    // order of magnitude and is invisible in every other answer the
+    // server gives.
+    size_vram_bytes: Int
+    // RFC 3339.  When this model will be unloaded if nothing uses it.
+    expires_at: Str
+
+// A whole `/api/ps` body.
+//
+// ```novo
+// use ollmodel
+//
+// fn main() [io]
+//     match ollmodel.decode_ps("{\"models\":[]}")
+//         Ok(rs) => println("${list.len(rs)}")
+//         Err(_) => println("refused")
+//     // : 0
+// ```
+pub fn decode_ps(body: Str) -> Result<[OllResident], OllFault> []
+    todo("ollama-nv.ollmodel.decode_ps")
+
+// Whether a resident model is running on the GPU at all.
+//
+// `size_vram_bytes > 0`.  Published because it is the one question
+// that explains a tenfold difference in speed and which no other
+// endpoint answers.
+//
+// ```novo
+// use ollmodel
+//
+// fn on_card(r: OllResident) -> Bool
+//     ollmodel.is_on_gpu(r)
+// ```
+pub fn is_on_gpu(r: OllResident) -> Bool []
+    todo("ollama-nv.ollmodel.is_on_gpu")
+
+// What `/api/show` answers about one model.
+pub struct OllShow
+    // The Modelfile the server reconstructs.  Text, because that is
+    // what the endpoint returns; `modelfile_of` parses it.
+    modelfile: Str
+    // The default parameters, as the server prints them.
+    parameters: Str
+    // The chat template, in Go template syntax.  NOT Jinja, which is
+    // what a checkpoint's `tokenizer_config.json` carries and what
+    // prompt-nv's `family_of_template` recognises — so a caller
+    // comparing the two is comparing two languages.
+    template: Str
+    details: OllDetails
+    // The architecture facts the GGUF header carries, as a JSON
+    // object: `general.architecture`, `llama.context_length`,
+    // `llama.embedding_length` and the rest.  Left as a value because
+    // the set differs per architecture, and gguf-nv is the package
+    // that names them.
+    model_info: JsonValueH
+    // The capabilities the server reports — `completion`, `tools`,
+    // `vision`, `embedding`.  The answer to "can I send this model a
+    // tool definition", which is otherwise found out by a 400.
+    capabilities: [Str]
+
+// A whole `/api/show` body.
+//
+// ```novo
+// use ollmodel
+//
+// fn main() [io]
+//     match ollmodel.decode_show("{}")
+//         Ok(s)  => println("${list.len(s.capabilities)}")
+//         Err(_) => println("refused")
+//     // : 0
+// ```
+pub fn decode_show(body: Str) -> Result<OllShow, OllFault> []
+    todo("ollama-nv.ollmodel.decode_show")
+
+// Whether a model reports a named capability.
+//
+// `ollmodel.can(s, "tools")` before offering a tool set, rather than
+// finding out from a 400 — or, worse, from a model that ignores the
+// tools and answers in prose.
+//
+// ```novo
+// use ollmodel
+//
+// fn tools_ok(s: OllShow) -> Bool
+//     ollmodel.can(s, "tools")
+// ```
+pub fn can(s: OllShow, capability: Str) -> Bool []
+    todo("ollama-nv.ollmodel.can")
+
+// The context length the model was built with, or -1.
+//
+// Read out of `model_info` under whichever architecture prefix the
+// model uses, because the key is `llama.context_length` for one family
+// and `qwen2.context_length` for another.  This is the number
+// `ollgen`'s `num_ctx` may not exceed, and the one a caller needs
+// before it budgets a prompt.
+//
+// ```novo
+// use ollmodel
+//
+// fn window(s: OllShow) -> Int
+//     ollmodel.context_length(s)
+// ```
+pub fn context_length(s: OllShow) -> Int []
+    todo("ollama-nv.ollmodel.context_length")
+
+// One instruction of a Modelfile.
+pub enum OllInstruction
+    // `FROM <model or path>` — required, and first.
+    OllFrom(source: Str)
+    // `PARAMETER <name> <value>`.
+    OllParameter(name: Str, value: Str)
+    // `TEMPLATE <go template>`.
+    OllTemplate(text: Str)
+    // `SYSTEM <text>`.
+    OllSystem(text: Str)
+    // `ADAPTER <path>` — a LoRA.
+    OllAdapter(path: Str)
+    // `LICENSE <text>`.
+    OllLicense(text: Str)
+    // `MESSAGE <role> <text>` — a canned turn baked into the model.
+    OllMessage(role: Str, text: Str)
+
+// A Modelfile, as a value.
+//
+// A VALUE AND NOT A PATH, which is what keeps this module `[]`: a
+// caller that has one on disk reads it with `std.fs` and hands the
+// text here, and a caller building one programmatically never touches
+// a file at all.
+pub struct OllModelfile
+    instructions: [OllInstruction]
+
+// Parse a Modelfile.
+//
+// `OllBadModelfile` names the LINE, because a Modelfile is written by
+// hand and a refusal without a line number is one a person has to
+// bisect.
+//
+// ```novo
+// use ollmodel
+//
+// fn main() [io]
+//     match ollmodel.modelfile_of("FROM llama3\n")
+//         Ok(m)  => println("${list.len(m.instructions)}")
+//         Err(_) => println("refused")
+//     // : 1
+// ```
+pub fn modelfile_of(text: Str) -> Result<OllModelfile, OllFault> []
+    todo("ollama-nv.ollmodel.modelfile_of")
+
+// A Modelfile from a base model and nothing else.
+//
+// ```novo
+// use ollmodel
+//
+// fn main() [io]
+//     println("${list.len(ollmodel.from("llama3").instructions)}")
+//     // : 1
+// ```
+pub fn from(source: Str) -> OllModelfile []
+    todo("ollama-nv.ollmodel.from")
+
+// The same Modelfile with one more instruction.
+//
+// ```novo
+// use ollmodel
+//
+// fn main() [io]
+//     let m = ollmodel.with_instruction(ollmodel.from("llama3"),
+//                                       OllSystem("be brief"))
+//     println("${list.len(m.instructions)}")
+//     // : 2
+// ```
+pub fn with_instruction(m: OllModelfile, i: OllInstruction) -> OllModelfile []
+    todo("ollama-nv.ollmodel.with_instruction")
+
+// The Modelfile as text the server will accept.
+//
+// Quotes a multi-line value as the format requires, which is the part
+// a caller writing one by string concatenation gets wrong: a `SYSTEM`
+// with a newline in it needs triple quotes, and without them the
+// second line is read as an unknown instruction.
+//
+// ```novo
+// use ollmodel
+//
+// fn main() [io]
+//     match ollmodel.render(ollmodel.from("llama3"))
+//         Ok(t)  => println(t)
+//         Err(_) => println("refused")
+//     // : FROM llama3
+// ```
+pub fn render(m: OllModelfile) -> Result<Str, OllFault> []
+    todo("ollama-nv.ollmodel.render")
+
+// The base model a Modelfile builds on, or empty.
+//
+// ```novo
+// use ollmodel
+//
+// fn main() [io]
+//     println(ollmodel.base_of(ollmodel.from("llama3")))
+//     // : llama3
+// ```
+pub fn base_of(m: OllModelfile) -> Str []
+    todo("ollama-nv.ollmodel.base_of")

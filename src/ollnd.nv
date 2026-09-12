@@ -1,0 +1,217 @@
+// ollnd.nv — the newline-delimited JSON reader, which is what this
+// server streams instead of server-sent events.
+//
+// Every body here is a `todo()`; the signatures are the design.
+//
+// `[]` throughout, feed and drain, with the loop in the host.
+//
+// **THE SAME SERVER, TWO FRAMINGS, AND THAT IS WHERE THIS PACKAGE AND
+// llm-client-nv MEET.**  Ollama serves two APIs on one port: its own
+// at `/api/*`, and an OpenAI-compatible one at `/v1/*`.  They do not
+// stream the same way.
+//
+//   `/v1/chat/completions` streams SERVER-SENT EVENTS: `data: ` lines,
+//   blank-line frame boundaries, a `[DONE]` sentinel that is not JSON.
+//   llm-client-nv's `llmcsse` reads that, and a program pointing
+//   `llmcreq.compatible("http://localhost:11434", "")` at this server
+//   needs nothing from this package at all.
+//
+//   `/api/chat`, `/api/generate` and `/api/pull` stream NEWLINE-
+//   DELIMITED JSON: one complete object per line, no prefix, no blank
+//   line, no sentinel — the end is an object whose `done` is true.
+//   That is this module.
+//
+// A client that pointed the wrong reader at the wrong endpoint gets
+// nothing and no error: the SSE reader finds no `data: ` prefix and
+// buffers forever, and this one finds no line ending on an SSE frame's
+// first line and does the same.  `ollapi` never gives a caller the
+// chance, because it only ever speaks `/api/*`.
+//
+// THE TWO THINGS THIS READER GETS RIGHT THAT A `split("\n")` DOES NOT:
+//
+//   A LINE ARRIVES SPLIT.  A read off a socket ends where the network
+//   chose, and a 40 GB pull's progress objects are small enough that
+//   several arrive in one read and large enough that one straddles
+//   two.
+//
+//   AN OBJECT MAY CARRY A NEWLINE INSIDE A STRING.  A generated token
+//   is often a newline, and `{"response":"\n"}` is one line of the
+//   stream even though its JSON encoding contains the two characters
+//   backslash and n.  The framing is the RAW newline between objects;
+//   an escaped one inside a string is not a boundary, and a reader
+//   that split on the decoded text would cut an object in half.
+
+use std.bytes
+use std.json
+
+// The reader between "some bytes turned up" and "here is an object".
+//
+// Opaque: the fields are here because a struct needs them, and a
+// caller that reaches into one has coupled itself to a buffering
+// decision this module intends to change.
+pub struct OllNdReader
+    pending: [u8]
+    offset: Int
+    max_object: Int
+
+// A reader and the one object that came out of it, if one did.
+pub struct OllNdStep
+    reader: OllNdReader
+    // The line's text, unparsed.  A `Str` rather than a `JsonValueH`
+    // because the caller's next question differs per endpoint —
+    // `ollpull` asks whether it is an error object before it asks
+    // anything else — and because a test asserts an exact line.
+    line: ?Str
+
+// A reader with the default object limit.
+//
+// ```novo
+// use ollnd
+//
+// fn main() [io]
+//     println("${ollnd.reader().max_object}")
+// ```
+pub fn reader() -> OllNdReader []
+    todo("ollama-nv.ollnd.reader")
+
+// A reader that refuses an object larger than `max_object` bytes.
+//
+// A limit rather than a growing buffer.  This server is usually on the
+// same machine and usually trusted, and the limit is here anyway,
+// because `ollama serve` behind a tunnel is a normal deployment and a
+// program should be able to say how much it will hold.
+//
+// ```novo
+// use ollnd
+//
+// fn main() [io]
+//     println("${ollnd.reader_with(262144).max_object}")
+//     // : 262144
+// ```
+pub fn reader_with(max_object: Int) -> OllNdReader []
+    todo("ollama-nv.ollnd.reader_with")
+
+// Feed bytes, and take the first object they completed.
+//
+// `line` is `None` when the bytes did not finish one.  Call `take`
+// until it answers `None` to drain the rest: one read off a socket
+// routinely completes several progress objects.
+//
+// ```novo
+// use ollnd
+//
+// fn main() [io]
+//     match ollnd.feed(ollnd.reader(), [])
+//         Ok(_)  => println("fed")
+//         Err(_) => println("refused")
+// ```
+pub fn feed(r: OllNdReader, data: [u8]) -> Result<OllNdStep, OllFault> []
+    todo("ollama-nv.ollnd.feed")
+
+// Take the next object out of what has already been fed.
+//
+// ```novo
+// use ollnd
+//
+// fn main() [io]
+//     match ollnd.take(ollnd.reader())
+//         Ok(_)  => println("taken")
+//         Err(_) => println("refused")
+// ```
+pub fn take(r: OllNdReader) -> Result<OllNdStep, OllFault> []
+    todo("ollama-nv.ollnd.take")
+
+// How many fed bytes have not yet made an object.
+//
+// Published so a test asserts directly that the reader holds nothing
+// whose size the peer chose.
+//
+// ```novo
+// use ollnd
+//
+// fn main() [io]
+//     println("${ollnd.pending_len(ollnd.reader())}")
+//     // : 0
+// ```
+pub fn pending_len(r: OllNdReader) -> Int []
+    todo("ollama-nv.ollnd.pending_len")
+
+// One line parsed as a JSON value.
+//
+// ```novo
+// use ollnd
+//
+// fn main() [io]
+//     match ollnd.parse(" {\"done\": true} ")
+//         Ok(v)  => println(json.type_of(v))
+//         Err(_) => println("not an object")
+//     // : object
+// ```
+pub fn parse(line: Str) -> Result<JsonValueH, OllFault> []
+    todo("ollama-nv.ollnd.parse")
+
+// Whether a line is this server's in-band error object.
+//
+// **A 200 STATUS IS NOT SUCCESS ON THESE ENDPOINTS.**  `/api/pull`
+// answers 200 and then writes `{"error": "pull model manifest: file
+// does not exist"}` as one of its objects; a client that checked only
+// the status reports a completed download of nothing.  Every caller
+// draining a stream from this package asks this question first, and
+// `ollpull.event_of` and `ollgen.chunk_of` both do.
+//
+// ```novo
+// use ollnd
+//
+// fn main() [io]
+//     println("${ollnd.is_error("{\"error\":\"file does not exist\"}")}")
+//     // : true
+// ```
+pub fn is_error(line: Str) -> Bool []
+    todo("ollama-nv.ollnd.is_error")
+
+// The fault an in-band error line carries.
+//
+// ```novo
+// use ollnd
+//
+// fn main() [io]
+//     match ollnd.error_of("{\"error\":\"file does not exist\"}")
+//         Some(_) => println("a failure inside a 200")
+//         None    => println("not an error line")
+//     // : a failure inside a 200
+// ```
+pub fn error_of(line: Str) -> ?OllFault []
+    todo("ollama-nv.ollnd.error_of")
+
+// Whether a line is the stream's terminator — `"done": true`.
+//
+// There is no sentinel and no blank line: the end of one of these
+// streams is a FIELD on the last object, which is why a truncated
+// stream and a finished one are distinguishable at all.
+//
+// ```novo
+// use ollnd
+//
+// fn main() [io]
+//     println("${ollnd.is_done("{\"done\":true}")}")
+//     // : true
+// ```
+pub fn is_done(line: Str) -> Bool []
+    todo("ollama-nv.ollnd.is_done")
+
+// Every whole object in a buffer that already holds all of them.
+//
+// The convenience for a test and for a caller that collected the body
+// itself.  A stream a program is watching uses `feed`.
+//
+// ```novo
+// use ollnd
+//
+// fn main() [io]
+//     match ollnd.lines_of([])
+//         Ok(ls) => println("${list.len(ls)}")
+//         Err(_) => println("refused")
+//     // : 0
+// ```
+pub fn lines_of(buf: [u8]) -> Result<[Str], OllFault> []
+    todo("ollama-nv.ollnd.lines_of")

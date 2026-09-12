@@ -1,0 +1,295 @@
+// ollpull.nv — `/api/pull`, and the progress a caller pumps.
+//
+// Every body here is a `todo()`; the signatures are the design.
+//
+// `[]` throughout.
+//
+// **THIS MODULE IS THE LOAD-BEARING INTERFACE OF THE PACKAGE, AND
+// `OllPullEvent` IS THE VALUE.**  Two arguments, both of which are
+// failures a simpler shape produces and nobody notices.
+//
+// FIRST: A PULL IS MINUTES LONG AND ITS ERRORS ARE INSIDE A 200.
+// Downloading a 40 GB model takes twenty minutes on a good connection.
+// An API shaped `pull(name) -> Result<Unit, Fault>` gives a program
+// nothing to show a person for those twenty minutes and no way to tell
+// "still going" from "hung" — but that is the small half.  The large
+// half is that this endpoint answers **200 and then writes
+// `{"error": "pull model manifest: file does not exist"}`** as one of
+// its newline-delimited objects.  A client that checked the status
+// code reports a successful pull of a model that was never downloaded,
+// and the next call fails with a 404 that looks like a different bug.
+// `event_of` asks `ollnd.is_error` before it asks anything else, and
+// `OllPullFailed` is a variant of the event rather than a return
+// value, so a caller draining the stream cannot skip it.
+//
+// SECOND: THE PROGRESS NUMBERS ARE PER-LAYER AND RESET.  A model is
+// several blobs, and `completed` and `total` describe **the layer
+// being downloaded**, not the model.  A client that drew one bar from
+// those two numbers draws a bar that reaches 100% and jumps back to
+// zero four times — which is the single most common visible defect in
+// clients written against this endpoint.  `OllPullProgress` carries
+// the digest so a caller can tell layers apart, and `overall` is the
+// whole-download figure, computed from the layers already finished
+// plus the one in flight.  It is a function rather than a field
+// because it needs the caller's accumulated state, and that state is
+// `OllPullState`.
+//
+// The same shape covers `/api/push` and `/api/create`, which stream
+// the same objects; `ollapi` drives all three through this module.
+
+use std.json
+use std.list
+
+// One object of a pull's stream, as what it means.
+pub enum OllPullEvent
+    // A step with no byte count: `pulling manifest`, `verifying sha256
+    // digest`, `writing manifest`, `removing any unused layers`.
+    OllPullStatus(status: Str)
+    // Bytes, for ONE layer.  See the module header: `completed` and
+    // `total` reset when the next layer starts.
+    OllPullProgress(digest: Str, completed: Int, total: Int)
+    // The final object: `{"status": "success"}`.
+    OllPullDone
+    // An `{"error": …}` object INSIDE the 200.  A variant of the event
+    // rather than a returned error, so a caller draining the stream
+    // cannot walk past it.
+    OllPullFailed(message: Str)
+
+// What one line of the stream said.
+//
+// Asks whether the line is an in-band error before anything else.
+//
+// ```novo
+// use ollpull
+//
+// fn main() [io]
+//     match ollpull.event_of("{\"status\":\"pulling manifest\"}")
+//         Ok(_)  => println("an event")
+//         Err(_) => println("not one")
+//     // : an event
+// ```
+pub fn event_of(line: Str) -> Result<OllPullEvent, OllFault> []
+    todo("ollama-nv.ollpull.event_of")
+
+// Whether an event is the in-band failure.
+//
+// The check a caller writes once, so the `match` in its loop cannot
+// omit the arm by accident.
+//
+// ```novo
+// use ollpull
+//
+// fn main() [io]
+//     println("${ollpull.is_failure(OllPullFailed("file does not exist"))}")
+//     // : true
+// ```
+pub fn is_failure(e: OllPullEvent) -> Bool []
+    todo("ollama-nv.ollpull.is_failure")
+
+// The fault an event carries, or None.
+//
+// ```novo
+// use ollpull
+//
+// fn main() [io]
+//     match ollpull.fault_of(OllPullFailed("file does not exist"))
+//         Some(_) => println("a failure")
+//         None    => println("progress")
+//     // : a failure
+// ```
+pub fn fault_of(e: OllPullEvent) -> ?OllFault []
+    todo("ollama-nv.ollpull.fault_of")
+
+// What a caller accumulates across a pull.
+//
+// A VALUE the caller threads through `advance`, because the loop is
+// the caller's — a terminal drawing a bar, a build script printing a
+// line per layer and a service logging one line per minute all want
+// different loops, and none of them wants a callback.
+pub struct OllPullState
+    // The digests finished so far, in the order they finished.
+    done_digests: [Str]
+    // The bytes those layers held, summed.
+    done_bytes: Int
+    // The layer being downloaded, or empty.
+    current_digest: Str
+    current_completed: Int
+    current_total: Int
+    // The last status line, for a caller that wants to show words
+    // rather than a bar — a pull spends real time in `verifying
+    // sha256 digest`, during which no byte counter moves at all, and a
+    // bar alone looks stuck.
+    status: Str
+    finished: Bool
+
+// An empty accumulator.
+//
+// ```novo
+// use ollpull
+//
+// fn main() [io]
+//     println("${ollpull.state().finished}")
+//     // : false
+// ```
+pub fn state() -> OllPullState []
+    todo("ollama-nv.ollpull.state")
+
+// Fold one event into the accumulator.
+//
+// A progress object for a digest different from `current_digest`
+// closes the current layer and opens a new one, which is where the
+// per-layer numbers become whole-download ones.
+//
+// ```novo
+// use ollpull
+//
+// fn main() [io]
+//     let s = ollpull.advance(ollpull.state(), OllPullStatus("pulling manifest"))
+//     println(s.status)
+//     // : pulling manifest
+// ```
+pub fn advance(s: OllPullState, e: OllPullEvent) -> OllPullState []
+    todo("ollama-nv.ollpull.advance")
+
+// Bytes downloaded across the whole model, and bytes expected.
+//
+// **THE CALL THIS MODULE EXISTS FOR.**  The layers already finished
+// plus the one in flight — which is the number a progress bar should
+// be drawn from, and which the stream never sends.  The expected total
+// is only the layers SEEN so far, so it grows as the pull discovers
+// blobs; a caller showing a percentage should say "of what is known",
+// or show bytes.
+//
+// ```novo
+// use ollpull
+//
+// fn main() [io]
+//     let p = ollpull.overall(ollpull.state())
+//     println("${p.completed}")
+//     // : 0
+// ```
+pub fn overall(s: OllPullState) -> OllPullTotal []
+    todo("ollama-nv.ollpull.overall")
+
+// A whole-download byte count.
+pub struct OllPullTotal
+    completed: Int
+    // The layers seen so far, summed.  GROWS during a pull, which is
+    // why it is a field beside `completed` rather than a percentage.
+    total: Int
+    // How many layers have finished.
+    layers_done: Int
+
+// The fraction downloaded, as a number in [0, 1].
+//
+// Zero when nothing is known yet.  Published beside `overall` because
+// the division is the part a caller gets wrong when `total` is zero.
+//
+// ```novo
+// use ollpull
+//
+// fn main() [io]
+//     println("${ollpull.fraction(ollpull.state())}")
+// ```
+pub fn fraction(s: OllPullState) -> Float []
+    todo("ollama-nv.ollpull.fraction")
+
+// One line a terminal can print, rebuilt each time.
+//
+// The convenience that stops every caller writing the same `verifying
+// sha256 digest` special case: the words when there is no byte count,
+// the bytes when there is, and the layer number either way.
+//
+// ```novo
+// use ollpull
+//
+// fn main() [io]
+//     println(ollpull.describe(ollpull.state()))
+// ```
+pub fn describe(s: OllPullState) -> Str []
+    todo("ollama-nv.ollpull.describe")
+
+// Whether the pull is over, successfully.
+//
+// A `"success"` object arrived and no failure did.  Distinct from a
+// stream that simply stopped, which is `OllStreamTruncated` — a pull
+// that was interrupted leaves partial blobs on disk and the next pull
+// resumes them, so the two states have different next steps.
+//
+// ```novo
+// use ollpull
+//
+// fn main() [io]
+//     println("${ollpull.succeeded(ollpull.state())}")
+//     // : false
+// ```
+pub fn succeeded(s: OllPullState) -> Bool []
+    todo("ollama-nv.ollpull.succeeded")
+
+// The `/api/pull` request body.
+//
+// `insecure` is a separate argument rather than a field on a struct
+// because it is the one that turns off certificate verification
+// against a private registry, and a parameter a caller has to pass is
+// one a reviewer can see.
+//
+// ```novo
+// use ollpull
+// use std.json
+//
+// fn main() [io]
+//     match ollpull.encode_pull("llama3", false)
+//         Ok(v)  => println(json.type_of(v))
+//         Err(_) => println("refused")
+//     // : object
+// ```
+pub fn encode_pull(model: Str, insecure: Bool) -> Result<JsonValueH, OllFault> []
+    todo("ollama-nv.ollpull.encode_pull")
+
+// The `/api/push` request body.
+//
+// ```novo
+// use ollpull
+// use std.json
+//
+// fn main() [io]
+//     match ollpull.encode_push("me/llama3", false)
+//         Ok(v)  => println(json.type_of(v))
+//         Err(_) => println("refused")
+//     // : object
+// ```
+pub fn encode_push(model: Str, insecure: Bool) -> Result<JsonValueH, OllFault> []
+    todo("ollama-nv.ollpull.encode_push")
+
+// The `/api/create` request body, from a Modelfile value.
+//
+// ```novo
+// use ollpull
+// use ollmodel
+// use std.json
+//
+// fn main() [io]
+//     match ollpull.encode_create("mine", ollmodel.from("llama3"))
+//         Ok(v)  => println(json.type_of(v))
+//         Err(_) => println("refused")
+//     // : object
+// ```
+pub fn encode_create(name: Str, m: OllModelfile) -> Result<JsonValueH, OllFault> []
+    todo("ollama-nv.ollpull.encode_create")
+
+// Every event in a stream a caller already has whole.
+//
+// For a test, and for the caller that collected the body rather than
+// watching it.  Stops at the first failure, which is what a loop does.
+//
+// ```novo
+// use ollpull
+//
+// fn main() [io]
+//     match ollpull.events_of("")
+//         Ok(es) => println("${list.len(es)}")
+//         Err(_) => println("refused")
+//     // : 0
+// ```
+pub fn events_of(body: Str) -> Result<[OllPullEvent], OllFault> []
+    todo("ollama-nv.ollpull.events_of")

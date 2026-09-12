@@ -1,0 +1,49 @@
+[package]
+name        = "ollama-nv"
+version     = "0.0.1"
+description = "The local model server's own API: /api/generate and /api/chat with the sampling options and the residency the OpenAI-compatible endpoint has no spelling for, /api/embed, /api/tags, /api/show, /api/ps, and /api/pull with the per-layer progress a caller pumps.  Newline-delimited JSON, not server-sent events — the same server, two framings.  Interface only — every body is a todo()."
+license     = "Apache-2.0"
+
+# An INTERFACE release: every `pub fn` body is a `todo()`, so the
+# signatures and the effect rows are published and nothing is
+# implemented.  `novo pkg publish` recognises the shape and requires
+# both the draft stability and the 0.0.x version; the first
+# implementation is the 0.1.0 published over it.
+stability   = "draft"
+
+# `host`, and SIX OF THE SEVEN MODULES DECLARE NOTHING.  `ollfault`,
+# `ollmodel`, `ollnd`, `ollgen`, `ollembed` and `ollpull` are `[]`
+# throughout: a request is a value, a reply is a value, and the
+# newline-delimited stream is a feed-and-drain reader over bytes the
+# caller already holds.  What performs is `ollapi`, and every call
+# there is effect-polymorphic over llm-client-nv's `LlmcTransport[e]`
+# and costs whatever the caller's transport costs.
+layer       = "host"
+
+category    = "ai"
+
+tags        = ["ollama", "llm", "local", "inference", "ndjson", "modelfile"]
+repository  = "https://github.com/novolang/ollama-nv"
+maintainers = ["novo-lang"]
+novo        = ">= 0.8.9"
+
+# A library: no `main`, so `novo pkg build` type-checks and
+# effect-checks every module under `src/` and writes no binary.
+
+[docs.pages]
+"README.md" = "The local server's own API, beside the one it imitates"
+
+[dependencies]
+# The transport trait, the fault vocabulary and the chat client this
+# package is the second half of.  A PATH DEPENDENCY while both are
+# staged together: `novo pkg publish` refuses one and the range
+# `llm-client-nv = "^0.0.1"` is what ships, resolved from the registry
+# once llm-client-nv is published.  `host`, which is this package's own
+# layer, so `dep-layer` holds.
+llm-client-nv = "^0.0.1"
+
+# The conversation `/api/chat` takes.  The same `PromptConvo`
+# llm-client-nv renders into the hosted dialects, rendered here into
+# the local server's own — which is the point of both packages taking
+# it rather than declaring a message type each.  `core`.
+prompt-nv = "^0.0.1"
