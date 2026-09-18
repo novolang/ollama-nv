@@ -35,12 +35,19 @@ novo        = ">= 0.8.9"
 
 [dependencies]
 # The transport trait, the fault vocabulary and the chat client this
-# package is the second half of.  A PATH DEPENDENCY while both are
-# staged together: `novo pkg publish` refuses one and the range
-# `llm-client-nv = "^0.0.1"` is what ships, resolved from the registry
-# once llm-client-nv is published.  `host`, which is this package's own
+# package is the second half of.  `host`, which is this package's own
 # layer, so `dep-layer` holds.
-llm-client-nv = "^0.0.1"
+#
+# `^0.0.2` RATHER THAN `^0.0.1`, and the reason is transitive:
+# llm-client-nv takes schema-nv, and schema-nv's `SchFault` only
+# declares the `impl Error` that `Result<_, scherror.SchFault>` has
+# required since SPEC § 3.4 as of schema-nv 0.0.2.  llm-client-nv
+# 0.0.1 still names the 0.0.1 schema-nv, so a build through it is
+# refused with E2018 — this package's own interface is unchanged and
+# its dependency closure is not.  Publish schema-nv, then
+# llm-client-nv, then this: a package cannot be published ahead of
+# what it depends on.
+llm-client-nv = "^0.0.2"
 
 # The conversation `/api/chat` takes.  The same `PromptConvo`
 # llm-client-nv renders into the hosted dialects, rendered here into
