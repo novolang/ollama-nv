@@ -50,7 +50,7 @@ impl LlmcTransport[] for OllScript
 
     fn llmc_read(self, max: Int) -> Result<[u8], LlmcFault>
         if self.open
-            Ok(self.body)
+            Ok(self.body[:])
         else
             Ok([])
 
